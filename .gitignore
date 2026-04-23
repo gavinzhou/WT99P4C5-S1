@@ -6,3 +6,17 @@ sdkconfig
 .cursorignore
 .cache/
 sdkconfig.old
+# macOS
+.DS_Store
+
+# Broken/transient test artifacts
+*.broken.bin
+main/c5_fw.new_broken.bin
+
+# Historical backups (superseded by git history once we have a HyperFi branch)
+main/idf_component.yml.*_attempt
+main/idf_component.yml.*_backup
+sdkconfig.before_*
+
+# Large reference PDFs (keep local, not in repo)
+*.pdf

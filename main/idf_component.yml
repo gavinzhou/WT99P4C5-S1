@@ -8,10 +8,20 @@ dependencies:
     version: "0.8.*"
     public: true
   espressif/esp_wifi_remote:
-    version: "*"
+    version: "0.14.2"
     rules:
       - if: "target in [esp32p4, esp32h2]"
   espressif/esp_hosted:
-    version: "*"
+    # 2026-04-23 Path A attempt rolled back:
+    #   2.12.6 在 IDF v5.5-beta1-204 + P4 eco2 + PSRAM 下的 `add_esp_wifi_remote_channels`
+    #   会 assert (xPortcheckValidStackMem panic). 关 SPIRAM_XIP_FROM_PSRAM 无效。
+    #   已知 bug: esp-hosted-mcu issue #33 "P4+C5 fails when esp_psram enabled".
+    #   CLAUDE.md 警告确认: P4 eco2 + v5.5-beta1 只能配 2.0.13。
+    version: "2.0.13"
     rules:
       - if: "target in [esp32p4, esp32h2]"
+  ## ADR-020 方案 A — P4 自烧 C5 via UART (esp-serial-flasher library)
+  espressif/esp-serial-flasher:
+    version: "^1.7.0"
+    rules:
+      - if: "target == esp32p4"

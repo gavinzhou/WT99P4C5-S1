@@ -1,31 +1,334 @@
 /*
- * SPDX-FileCopyrightText: 2023-2025 Espressif Systems (Shanghai) CO LTD
- *
+ * SPDX-FileCopyrightText: 2026 PacPort Inc.
  * SPDX-License-Identifier: CC0-1.0
+ *
+ * V5+V6: SDIO throughput test (P4 ↔ C5 via ESP-Hosted → 5GHz → Mac)
+ *        extends the ADR-020 方案 A PoC
+ *
+ * Flow:
+ *   1. Flash C5 via UART (P4 self-programs C5) [optional]
+ *   2. Init esp_wifi → ESP-Hosted SDIO handshake
+ *   3. Connect C5 as STA to standalone C5 TX AP "HyperFi_CSI_5G" ch36
+ *   4. Get IP from C5 TX (192.168.4.x)
+ *   5. TCP blast test to Mac (192.168.4.3:5001), report Mbps
+ *
+ * Wiring (J6 ↔ J5 jumper wires):
+ *   P4 GPIO32 → J5 RXD, P4 GPIO33 ← J5 TXD, P4 GPIO26 → J5 BOOT, GND shared
  */
 
+#include <stdio.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
-#include "bsp/esp-bsp.h"
-#include "esp_brookesia.hpp"
-#include "apps.h"
+#include "esp_netif.h"
+#include "esp_event.h"
+#include "esp_wifi.h"
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
 
-#define LVGL_PORT_INIT_CONFIG()   \
-    {                             \
-        .task_priority = 4,       \
-        .task_stack = 10 * 1024,  \
-        .task_affinity = -1,      \
-        .task_max_sleep_ms = 500, \
-        .timer_period_ms = 5,     \
-    }
+#include "c5_flasher.h"
+#include "esp_hosted.h"      /* esp_hosted_connect_to_slave() */
+#include "esp_hosted_misc.h" /* esp_hosted_register_custom_callback() — ADR-022 backport */
+
+/* Throughput test config */
+#define TEST_SSID          "HyperFi_CSI_5G"
+#define TEST_PASS          "hyperfi2026"
+#define IPERF_SERVER_IP    "192.168.4.3"
+#define IPERF_SERVER_PORT  5001
+#define TEST_DURATION_S    30
+#define BLAST_BUF_SIZE     1024
+
+/* HyperFi CSI pass-through event ID — MUST match slave_csi_hook.h */
+#define HYPERFI_CSI_EVENT_ID 0x2001
+
+/* HyperFi slave diagnostic text channel — MUST match slave_diag.h.
+ * Slave sends human-readable text over this event; host just printf()s. */
+#define HYPERFI_SLAVE_DIAG_EVENT_ID 0x2002
+
+/* On-wire CSI header layout — MUST match hyperfi_csi_wire_hdr_t on slave side */
+typedef struct __attribute__((packed)) {
+    uint32_t timestamp_us;
+    int8_t   rssi;
+    int8_t   noise_floor;
+    uint16_t seq;
+    uint16_t len;
+    uint8_t  mac[6];
+    uint8_t  bw;
+    uint8_t  reserved[3];
+} hyperfi_csi_wire_hdr_t;
+
+/* CSI stats — printed every ~1 sec via a simple counter */
+static uint32_t s_csi_frames_received = 0;
+static uint32_t s_csi_bytes_received  = 0;
+static int64_t  s_csi_first_us        = 0;
+
+/* Wi-Fi event group */
+static EventGroupHandle_t s_wifi_event_group = NULL;
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT      BIT1
 
 static const char *TAG = "app_main";
 
+/* Set to 1 to re-flash C5 at every boot (~2 min delay).
+ * Set to 0 to skip flash and go straight to ESP-Hosted SDIO init.
+ *
+ * 2026-04-23 note: skip-flash path is currently NOT reliable — C5 residual
+ * state from previous boot causes SDIO handshake to fail (ESP_ERR_TIMEOUT
+ * 0x107 on send_op_cond). BOOT=HIGH + EN reset from P4 side doesn't help.
+ * Need to investigate (maybe add a longer post-reset delay, or check C5
+ * partition integrity). For now, stay at 1 for every-boot fresh flash. */
+#ifndef C5_DO_FLASH_ON_BOOT
+#define C5_DO_FLASH_ON_BOOT  1
+#endif
+
+/* ========================================================================== */
+/* HyperFi CSI consumer (ADR-021 M2 + ADR-022) — receives CSI events from      */
+/* slave C5 via Custom RPC backport.                                           */
+/* ========================================================================== */
+
+/* Slave diagnostic text consumer (0x2002) — just printf the message. */
+static void on_slave_diag(uint32_t msg_id, const uint8_t *data,
+                          size_t data_len, void *ctx)
+{
+    (void)ctx;
+    (void)msg_id;
+    if (!data || data_len == 0) return;
+    /* Slave sends null-terminated UTF-8. Trust the terminator but cap at 256
+     * to defend against malformed frames. */
+    char buf[260];
+    size_t n = data_len < sizeof(buf) - 1 ? data_len : sizeof(buf) - 1;
+    memcpy(buf, data, n);
+    buf[n] = 0;
+    printf("[SLAVE] %s\n", buf);
+}
+
+static void on_csi_from_slave(uint32_t msg_id, const uint8_t *data,
+                              size_t data_len, void *ctx)
+{
+    (void)ctx;
+    (void)msg_id;
+
+    if (!data || data_len < sizeof(hyperfi_csi_wire_hdr_t)) {
+        return;  /* malformed */
+    }
+
+    const hyperfi_csi_wire_hdr_t *hdr = (const hyperfi_csi_wire_hdr_t *)data;
+
+    if (s_csi_first_us == 0) {
+        s_csi_first_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "[CSI] ★ first frame arrived — mac=%02X%02X%02X%02X%02X%02X "
+                 "rssi=%d seq=%u len=%u bw=%u",
+                 hdr->mac[0], hdr->mac[1], hdr->mac[2],
+                 hdr->mac[3], hdr->mac[4], hdr->mac[5],
+                 hdr->rssi, hdr->seq, hdr->len, hdr->bw);
+    }
+
+    s_csi_frames_received++;
+    s_csi_bytes_received += data_len;
+}
+
+static void csi_stats_task(void *arg)
+{
+    (void)arg;
+    uint32_t prev_frames = 0;
+    uint32_t prev_bytes  = 0;
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        uint32_t frames = s_csi_frames_received;
+        uint32_t bytes  = s_csi_bytes_received;
+        float fps = (frames - prev_frames) / 5.0f;
+        float kbps = (bytes - prev_bytes) * 8.0f / 5000.0f;
+        ESP_LOGI(TAG, "[CSI] stats: total=%lu frames (%.1f fps), %.1f kbps",
+                 (unsigned long)frames, fps, kbps);
+        prev_frames = frames;
+        prev_bytes = bytes;
+    }
+}
+
+/* CSI trigger task: periodically send UDP packets to the SoftAP gateway so the
+ * AP emits unicast reply frames. ESP32-C5's CSI engine only fires on unicast
+ * frames addressed to the STA, so we need this active traffic. 100 Hz is the
+ * same rate used by the standalone c5_rx_2g4/5g firmware. */
+static void csi_trigger_task(void *arg)
+{
+    (void)arg;
+    /* Wait for IP */
+    xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
+                        pdFALSE, pdTRUE, portMAX_DELAY);
+    /* Extra settle time after IP acquired */
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "[CSI-trigger] socket() failed errno=%d", errno);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    struct sockaddr_in dest = {};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(5500);          /* same port as c5_tx_5g's UDP broadcast */
+    inet_aton("192.168.4.1", &dest.sin_addr);   /* SoftAP gateway */
+
+    uint8_t payload[16];
+    memset(payload, 0x5A, sizeof(payload));
+    uint32_t seq = 0;
+
+    ESP_LOGI(TAG, "[CSI-trigger] pinging 192.168.4.1:5500 at 100Hz to force AP unicast replies");
+
+    while (1) {
+        memcpy(payload, &seq, sizeof(seq));
+        sendto(sock, payload, sizeof(payload), 0,
+               (struct sockaddr *)&dest, sizeof(dest));
+        seq++;
+        vTaskDelay(pdMS_TO_TICKS(10));   /* 100 Hz */
+    }
+}
+
+/* Wi-Fi event handlers */
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT) {
+        if (event_id == WIFI_EVENT_STA_START) {
+            /* HyperFi M2.9 fix: slave 2.12.6 + host 2.0.13 emits STA_START
+             * multiple times during init; repeated esp_wifi_connect() calls
+             * trigger a second netif_add inside esp_wifi_remote → lwip
+             * "netif already added" assert. Gate with a static flag so only
+             * the FIRST STA_START triggers connect. DISCONNECTED still retries. */
+            static bool first_start_handled = false;
+            if (!first_start_handled) {
+                first_start_handled = true;
+                esp_wifi_connect();
+                ESP_LOGI(TAG, "[Wi-Fi] STA start → connecting to %s...", TEST_SSID);
+            } else {
+                ESP_LOGW(TAG, "[Wi-Fi] STA_START re-entry, skipping duplicate connect");
+            }
+        } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+            ESP_LOGW(TAG, "[Wi-Fi] disconnected, retrying...");
+            esp_wifi_connect();
+            xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
+            ESP_LOGI(TAG, "[Wi-Fi] STA connected to AP");
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *ev = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "[Wi-Fi] ✓ GOT IP: " IPSTR, IP2STR(&ev->ip_info.ip));
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+/* TCP throughput test — connect retries until Mac nc is ready */
+static void throughput_test_task(void *arg)
+{
+    (void)arg;
+
+    /* Wait for IP */
+    ESP_LOGI(TAG, "[V5] Waiting for Wi-Fi + IP...");
+    xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
+                        pdFALSE, pdTRUE, portMAX_DELAY);
+
+    static uint8_t buf[BLAST_BUF_SIZE];
+    memset(buf, 0xAA, sizeof(buf));
+
+    int attempt = 0;
+    while (1) {
+        attempt++;
+        int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (sock < 0) {
+            ESP_LOGE(TAG, "[V5] socket() failed: errno=%d", errno);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+
+        /* 5-second connect timeout */
+        struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        struct sockaddr_in dest = {};
+        dest.sin_family = AF_INET;
+        dest.sin_port = htons(IPERF_SERVER_PORT);
+        inet_aton(IPERF_SERVER_IP, &dest.sin_addr);
+
+        ESP_LOGI(TAG, "[V5] attempt %d: connecting to %s:%d...",
+                 attempt, IPERF_SERVER_IP, IPERF_SERVER_PORT);
+
+        if (connect(sock, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
+            ESP_LOGW(TAG, "[V5] connect failed: errno=%d (probably Mac nc not started yet)", errno);
+            close(sock);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+
+        /* Connected — start blasting */
+        ESP_LOGI(TAG, "[V5] ✓ Connected! Blasting for %d seconds...", TEST_DURATION_S);
+        ESP_LOGI(TAG, "========================================");
+
+        int64_t t_start = esp_timer_get_time();
+        int64_t t_last_report = t_start;
+        int64_t total_bytes = 0;
+        int64_t bytes_since_report = 0;
+        bool failed = false;
+
+        while (1) {
+            int64_t now = esp_timer_get_time();
+            int64_t elapsed_us = now - t_start;
+            if (elapsed_us >= (int64_t)TEST_DURATION_S * 1000000) break;
+
+            int sent = send(sock, buf, BLAST_BUF_SIZE, 0);
+            if (sent < 0) {
+                ESP_LOGE(TAG, "[V5] send() failed at %lld ms: errno=%d",
+                         elapsed_us / 1000, errno);
+                failed = true;
+                break;
+            }
+            total_bytes += sent;
+            bytes_since_report += sent;
+
+            if (now - t_last_report >= 1000000) {
+                float mbps = bytes_since_report * 8.0f / (now - t_last_report);
+                ESP_LOGI(TAG, "[V5] t=%2lld s — %7.2f Mbps  (total=%lld KB)",
+                         elapsed_us / 1000000, mbps, total_bytes / 1024);
+                bytes_since_report = 0;
+                t_last_report = now;
+            }
+        }
+
+        int64_t t_end = esp_timer_get_time();
+        float elapsed_s = (t_end - t_start) / 1000000.0f;
+        float avg_mbps = total_bytes * 8.0f / (t_end - t_start);
+
+        ESP_LOGI(TAG, "========================================");
+        if (failed) {
+            ESP_LOGW(TAG, "  [V5] Test ABORTED after %.2f s", elapsed_s);
+        } else {
+            ESP_LOGI(TAG, "  [V5] ✓ TEST COMPLETE");
+        }
+        ESP_LOGI(TAG, "  Total: %lld bytes (%lld KB) in %.2f s",
+                 total_bytes, total_bytes / 1024, elapsed_s);
+        ESP_LOGI(TAG, "  Average: %.2f Mbps  (%.2f MB/s)",
+                 avg_mbps, total_bytes / (elapsed_s * 1024 * 1024));
+        ESP_LOGI(TAG, "  CSI requirement: ~0.6 Mbps (100fps × 768B)");
+        ESP_LOGI(TAG, "  Margin: %.0fx", avg_mbps / 0.6f);
+        ESP_LOGI(TAG, "========================================");
+
+        close(sock);
+        break;  /* test done — exit the retry loop */
+    }
+
+    ESP_LOGI(TAG, "[V5] Throughput test finished — idle.");
+    vTaskDelete(NULL);
+}
+
 extern "C" void app_main(void)
 {
+    /* ---- NVS ---- */
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -33,113 +336,125 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    ESP_ERROR_CHECK(bsp_spiffs_mount());
-    ESP_LOGI(TAG, "SPIFFS mount successfully");
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "  V5+V6: SDIO Throughput Test");
+    ESP_LOGI(TAG, "  Board: WT99P4C5-S1 (P4 + C5)");
+    ESP_LOGI(TAG, "  Target: %s via %s (ch36 5G)", IPERF_SERVER_IP, TEST_SSID);
+    ESP_LOGI(TAG, "========================================");
 
-    ESP_ERROR_CHECK(bsp_sdcard_mount());
-    ESP_LOGI(TAG, "SD card mount successfully");
+    /* ---- Step 1: Flash C5 via UART (conditional) ---- */
+#if C5_DO_FLASH_ON_BOOT
+    ESP_LOGI(TAG, "[Step 1] Flashing C5 via UART (~2 min)...");
+    if (c5_full_flash() == ESP_OK) {
+        ESP_LOGI(TAG, "[Step 1] ✓ C5 flash completed");
+    } else {
+        ESP_LOGE(TAG, "[Step 1] ✗ C5 flash FAILED — trying SDIO anyway");
+    }
+#else
+    ESP_LOGI(TAG, "[Step 1] Skipped flash — releasing C5 to normal boot (BOOT=HIGH + EN reset)...");
+    /* Must explicitly set BOOT high + reset C5 before SDIO init.
+     * Otherwise BOOT pin floats, C5 may enter download mode,
+     * SDIO handshake times out with ESP_ERR_TIMEOUT 0x107. */
+    c5_release_normal_boot_public();
+#endif
 
-    ESP_ERROR_CHECK(bsp_extra_codec_init());
-    ESP_LOGI(TAG, "Codec init successfully");
-
-    ESP_ERROR_CHECK(bsp_eth_init());
-    ESP_LOGI(TAG, "Ethernet init successfully");
-
-    bsp_display_cfg_t cfg = {
-        .lvgl_port_cfg = LVGL_PORT_INIT_CONFIG(),
-        .buffer_size = BSP_LCD_DRAW_BUFF_SIZE,
-        .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
-        .hw_cfg =
-            {
-                .hdmi_resolution = BSP_HDMI_RES_NONE,
-                .dsi_bus =
-                    {
-                        .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
-                        .lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS,
-                    },
-            },
-        .flags =
-            {
-                .buff_dma = false,
-                .buff_spiram = true,
-                .sw_rotate = false,
-            },
-    };
-    lv_display_t *disp = bsp_display_start_with_config(&cfg);
-    bsp_display_backlight_on();
-
-    ESP_LOGI(TAG, "Display ESP-Brookesia phone demo");
-    /**
-     * To avoid errors caused by multiple tasks simultaneously accessing LVGL,
-     * should acquire a lock before operating on LVGL.
+    /* ---- Step 2: Init Wi-Fi stack following official esp-hosted-mcu example order ----
+     *
+     * IMPORTANT ORDER (verified against examples/host_hosted_events/main/main.c):
+     *   1. esp_netif_init()                         — lwip + netif core init
+     *   2. esp_event_loop_create_default()          — event loop
+     *   3. Register WIFI_EVENT + IP_EVENT handlers  — BEFORE any netif creation
+     *   4. esp_hosted_connect_to_slave()            — explicit SDIO handshake
+     *      (Previously we let esp_wifi_init() trigger SDIO implicitly, which caused
+     *       v2.12.6 slave to auto-register its own netif during transport init,
+     *       then our esp_netif_create_default_wifi_sta() became a duplicate →
+     *       "netif already added" assert at esp_wifi_start → STA_START event.)
+     *   5. esp_netif_create_default_wifi_sta()      — AFTER transport up
+     *   6. esp_wifi_init / set_mode / set_config / start
      */
-    bsp_display_lock(0);
+    ESP_LOGI(TAG, "[Step 2] Initializing Wi-Fi stack...");
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    ESP_Brookesia_Phone *phone = new ESP_Brookesia_Phone();
-    assert(phone != nullptr && "Failed to create phone");
+    /* Create event group + register handlers BEFORE netif creation (per example) */
+    s_wifi_event_group = xEventGroupCreate();
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
 
-    ESP_Brookesia_PhoneStylesheet_t *phone_stylesheet =
-        new ESP_Brookesia_PhoneStylesheet_t ESP_BROOKESIA_PHONE_1024_600_DARK_STYLESHEET();
-    ESP_BROOKESIA_CHECK_NULL_EXIT(phone_stylesheet, "Create phone stylesheet failed");
-    ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->addStylesheet(*phone_stylesheet), "Add phone stylesheet failed");
-    ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->activateStylesheet(*phone_stylesheet), "Activate phone stylesheet failed");
+    /* Explicitly complete SDIO handshake BEFORE creating netif.
+     * esp_hosted_host_init() constructor already called esp_hosted_init() before main.
+     * esp_hosted_connect_to_slave() → esp_hosted_reconfigure() → transport_drv_reconfigure()
+     * This is synchronous in v2.0.13 — returns after SDIO INIT event received. */
+    ESP_LOGI(TAG, "[Step 2] Connecting to C5 slave via SDIO (esp_hosted_connect_to_slave)...");
+    int hosted_err = esp_hosted_connect_to_slave();
+    if (hosted_err != 0) {
+        ESP_LOGE(TAG, "[Step 2] esp_hosted_connect_to_slave failed: %d", hosted_err);
+        while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    ESP_LOGI(TAG, "[Step 2] ✓ SDIO handshake complete");
 
-    assert(phone->begin() && "Failed to begin phone");
+    /* Register HyperFi CSI consumer (ADR-022 Custom RPC backport).
+     * Must happen after SDIO handshake so the RPC channel is live;
+     * can happen before or after esp_wifi_init(). Do it now for clarity. */
+    esp_err_t csi_reg = esp_hosted_register_custom_callback(
+            HYPERFI_CSI_EVENT_ID, on_csi_from_slave, NULL);
+    if (csi_reg != ESP_OK) {
+        ESP_LOGW(TAG, "[Step 2] esp_hosted_register_custom_callback failed: 0x%x", csi_reg);
+    } else {
+        ESP_LOGI(TAG, "[Step 2] ✓ HyperFi CSI consumer registered (event 0x%04X)",
+                 HYPERFI_CSI_EVENT_ID);
+    }
 
-    Calculator *calculator = new Calculator();
-    assert(calculator != nullptr && "Failed to create calculator");
-    assert((phone->installApp(calculator) >= 0) && "Failed to begin calculator");
-    MusicPlayer *music_player = new MusicPlayer();
-    assert(music_player != nullptr && "Failed to create music_player");
-    assert((phone->installApp(music_player) >= 0) && "Failed to begin music_player");
+    /* HyperFi slave diagnostic text channel (M2.9): slave sends printf-style
+     * messages over event 0x2002; we just echo to host console as [SLAVE] ... */
+    esp_err_t diag_reg = esp_hosted_register_custom_callback(
+            HYPERFI_SLAVE_DIAG_EVENT_ID, on_slave_diag, NULL);
+    if (diag_reg != ESP_OK) {
+        ESP_LOGW(TAG, "[Step 2] slave diag callback reg failed: 0x%x", diag_reg);
+    } else {
+        ESP_LOGI(TAG, "[Step 2] ✓ Slave diag consumer registered (event 0x%04X)",
+                 HYPERFI_SLAVE_DIAG_EVENT_ID);
+    }
 
-    AppSettings *app_settings = new AppSettings();
-    assert(app_settings != nullptr && "Failed to create app_settings");
-    assert((phone->installApp(app_settings) >= 0) && "Failed to begin app_settings");
+    xTaskCreate(csi_stats_task, "csi_stats", 3072, NULL, 1, NULL);
 
-    Game2048 *game_2048 = new Game2048();
-    assert(game_2048 != nullptr && "Failed to create game_2048");
-    assert((phone->installApp(game_2048) >= 0) && "Failed to begin game_2048");
+    /* Now safe to create netif — transport is up, no race with framework auto-create */
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif) {
+        ESP_LOGI(TAG, "[Step 2] WIFI_STA_DEF netif already exists (framework auto-created) — reusing");
+    } else {
+        sta_netif = esp_netif_create_default_wifi_sta();
+        ESP_LOGI(TAG, "[Step 2] WIFI_STA_DEF netif created manually");
+    }
 
-    Camera *camera = new Camera(1280, 960);
-    assert(camera != nullptr && "Failed to create camera");
-    assert((phone->installApp(camera) >= 0) && "Failed to begin camera");
+    wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
+    err = esp_wifi_init(&wifi_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "[Step 2] esp_wifi_init failed: 0x%x", err);
+        while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    ESP_LOGI(TAG, "[Step 2] ✓ esp_wifi_init OK");
 
-    AppVideoPlayer *video_player = new AppVideoPlayer();
-    assert(video_player != nullptr && "Failed to create video_player");
-    assert((phone->installApp(video_player) >= 0) && "Failed to begin video_player");
+    /* ---- Step 3: Configure STA + connect to HyperFi_CSI_5G ---- */
+    wifi_config_t wifi_config = {};
+    strncpy((char *)wifi_config.sta.ssid, TEST_SSID, sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char *)wifi_config.sta.password, TEST_PASS, sizeof(wifi_config.sta.password) - 1);
 
-    /* Release the lock */
-    bsp_display_unlock();
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI(TAG, "[Step 3] ✓ Wi-Fi started, connecting to %s...", TEST_SSID);
 
-    // Safe memory monitoring without heap traversal
-    char buffer[128]; /* Make sure buffer is enough for `sprintf` */
-    size_t internal_free = 0;
-    size_t internal_total = 0;
-    size_t external_free = 0;
-    size_t external_total = 0;
+    /* ---- Step 4: Launch CSI trigger + throughput tasks ---- */
+    /* CSI-trigger actively sends UDP so AP replies trigger CSI on slave side. */
+    xTaskCreate(csi_trigger_task, "csi_trig", 4096, NULL, 4, NULL);
+    xTaskCreate(throughput_test_task, "thrpt", 8192, NULL, 5, NULL);
 
+    /* Idle loop — throughput task takes over */
     while (1) {
-        // Only get basic memory info without traversing heap structures
-        internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
-        external_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        external_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
-
-        sprintf(buffer,
-                "   Biggest /     Free /    Total\n"
-                "\t  SRAM : [%d / %d / %d] KB\n"
-                "\t PSRAM : [%d / %d / %d] KB",
-                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024, internal_free / 1024,
-                internal_total / 1024, heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024, external_free / 1024,
-                external_total / 1024);
-        ESP_LOGI("MEM", "%s", buffer);
-
-        // Check for critically low memory
-        if (internal_free < 10 * 1024) {
-            ESP_LOGW("MEM", "WARNING: Internal memory critically low!");
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(5000)); // Increased delay to reduce overhead
+        vTaskDelay(pdMS_TO_TICKS(60000));
+        ESP_LOGI(TAG, "(uptime=%lld s)", (long long)(esp_log_timestamp() / 1000));
     }
 }

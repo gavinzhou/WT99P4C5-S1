@@ -1,0 +1,45 @@
+/*
+ * C6 Flasher for Waveshare ESP32-P4-WIFI6-POE-ETH
+ * (Adapted from c5_flasher.c for WT99P4C5-S1)
+ *
+ * Key differences from C5 version:
+ *   1. Target chip: ESP32-C6 (not ESP32-C5)
+ *   2. BOOT strapping pin: C6 IO9 (not C5 IO28)
+ *   3. Embedded firmware: c6_network_adapter.bin (not c5_fw.bin)
+ *   4. Pin mapping can be same if using same P4 GPIO assignments
+ *
+ * Wiring (Waveshare board):
+ *   P4 GPIO32 (UART1 TX)  →  Waveshare 背面 RXD pad  (= C6 U0RXD)
+ *   P4 GPIO33 (UART1 RX)  ←  Waveshare 背面 TXD pad  (= C6 U0TXD)
+ *   P4 GPIO26 (BOOT ctrl) →  Waveshare 背面 IO9 pad  (= C6 IO9 strapping)
+ *   GND                   →  Waveshare 背面 GND pad
+ *   P4 GPIO54             →  C6 CHIP_PU (already connected via PCB R52 0Ω)
+ */
+
+// Exactly the same code as c5_flasher.c, just:
+// 1. Replace references to "C5" with "C6" in log strings
+// 2. EMBED_FILES in CMakeLists.txt: use c6_fw.bin instead of c5_fw.bin
+// 3. In c6_full_flash(): same call, just with c6_fw_bin_start/_end symbols
+// 4. Pin numbers are IDENTICAL (PIN_P4_UART_TX=32, PIN_P4_UART_RX=33,
+//    PIN_P4_C5_BOOT=26 [rename to PIN_P4_C6_BOOT but same number],
+//    PIN_P4_C5_EN=54 [rename to PIN_P4_C6_EN])
+//
+// The target auto-detection by esp_loader_connect() will return ESP32C6_CHIP (=8)
+// instead of ESP32C5_CHIP (=6). Both are supported by esp-serial-flasher v1.7+.
+
+/*
+ * Source of C6 network_adapter binary:
+ *
+ * Option 1: Check if Waveshare's example project has a pre-built C6 binary
+ *   - Look in Waveshare's ESP32-P4-WIFI6-POE-ETH demo project
+ *   - Similar to how we found c5-slave.network_adapter.*.bin from WT
+ *
+ * Option 2: Build from source:
+ *   git clone https://github.com/espressif/esp-hosted-mcu.git
+ *   cd esp-hosted-mcu/slave
+ *   idf.py set-target esp32c6
+ *   idf.py build
+ *   # Output: build/network_adapter.bin
+ *
+ * Option 3: Use the generic esp-hosted 2.0.13 release C6 binary from Espressif
+ */

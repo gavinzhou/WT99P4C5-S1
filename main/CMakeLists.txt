@@ -1,6 +1,7 @@
 idf_component_register(
-    SRCS main.cpp
-    INCLUDE_DIRS .)
+    SRCS main.cpp c5_flasher.c
+    INCLUDE_DIRS .
+    EMBED_FILES c5_fw.bin)
 
 idf_component_get_property(LVGL_LIB lvgl__lvgl COMPONENT_LIB)
 target_compile_options(

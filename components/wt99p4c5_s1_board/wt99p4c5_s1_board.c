@@ -767,11 +767,16 @@ lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *cfg)
 
     BSP_ERROR_CHECK_RETURN_NULL(bsp_display_brightness_init());
 
-    BSP_ERROR_CHECK_RETURN_NULL(bsp_touch_new(NULL, &tp));
-    assert(tp);
+    esp_err_t touch_err = bsp_touch_new(NULL, &tp);
+    if (touch_err != ESP_OK) {
+        ESP_LOGW("BSP", "Touch init failed (0x%x), continuing without touch", touch_err);
+        tp = NULL;
+    }
 
     BSP_NULL_CHECK(disp = bsp_display_lcd_init(cfg), NULL);
-    BSP_NULL_CHECK(disp_indev = bsp_display_indev_init(disp), NULL);
+    if (tp) {
+        BSP_NULL_CHECK(disp_indev = bsp_display_indev_init(disp), NULL);
+    }
     return disp;
 }
 
