@@ -77,3 +77,8 @@ CONFIG_LV_USE_DEMO_BENCHMARK=y
 CONFIG_LV_USE_DEMO_STRESS=y
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 CONFIG_WIFI_RMT_CSI_ENABLED=y
+
+# HyperFi M2.9 follow-up: increase SDIO RX queue to absorb CSI burst @ 74 fps
+# ("task still writing Rx data to queue!" warnings at default=20).
+CONFIG_ESP_HOSTED_SDIO_RX_Q_SIZE=50
+CONFIG_ESP_HOSTED_SDIO_TX_Q_SIZE=30

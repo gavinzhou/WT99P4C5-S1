@@ -28,7 +28,10 @@ static const char *TAG = "c5_flasher";
 #define PIN_P4_C5_EN       54   /* → C5 EN, PCB 直连 */
 #define UART_PORT_NUM      1    /* P4 UART1 (UART0 is used by USB-UART) */
 #define BOOT_BAUD_RATE     115200
-#define HIGHER_BAUD_RATE   460800  /* bump after connect */
+/* 2026-04-24 re-enabled: WT99P4C5-S1 onboard trace supports high baud.
+ * 921600 → flash time drops from ~131s to ~16s (8x speedup).
+ * If we see err=2 TIMEOUT at flash_start, fall back to 460800 or 115200. */
+#define HIGHER_BAUD_RATE   921600
 
 /* Embedded C5 firmware (see main/CMakeLists.txt EMBED_FILES) */
 extern const uint8_t c5_fw_bin_start[] asm("_binary_c5_fw_bin_start");
@@ -133,11 +136,31 @@ esp_err_t c5_full_flash(void)
     }
     ESP_LOGI(TAG, "Connected, target=%d", esp_loader_get_target());
 
-    /* Stay at 115200 for reliability (tested 2026-04-22: 460800 causes TIMEOUT
-     * on err=2 at flash_start, likely due to dupont wire crosstalk / signal integrity.
-     * 1.2MB at 115200 = ~100s, acceptable for PoC/OTA scenarios.)
-     */
-    ESP_LOGI(TAG, "Flashing at 115200 baud (~100s expected)...");
+    /* Bump baud rate for faster flash. WT99P4C5-S1 onboard P4↔C5 trace
+     * is short and clean (vs 2026-04-22 dupont wires that capped at 115200).
+     * 921600 → ~16s for 1.37MB vs ~131s at 115200 (8x). */
+    uint32_t target_baud = HIGHER_BAUD_RATE;
+    err = esp_loader_change_transmission_rate(target_baud);
+    if (err != ESP_LOADER_SUCCESS) {
+        ESP_LOGW(TAG, "esp_loader_change_transmission_rate(%u) failed (err=%d), staying at %u baud",
+                 (unsigned)target_baud, err, BOOT_BAUD_RATE);
+        target_baud = BOOT_BAUD_RATE;
+    } else {
+        err = loader_port_change_transmission_rate(target_baud);
+        if (err != ESP_LOADER_SUCCESS) {
+            ESP_LOGW(TAG, "loader_port_change_transmission_rate(%u) failed (err=%d); host UART stays at %u, slave expects %u — this WILL desync",
+                     (unsigned)target_baud, err, BOOT_BAUD_RATE, (unsigned)target_baud);
+            /* Best-effort: if host can't switch, we have to fall back too,
+             * but the slave is already at new rate — expect failure. */
+            target_baud = BOOT_BAUD_RATE;
+        } else {
+            ESP_LOGI(TAG, "✓ baud upgraded to %u", (unsigned)target_baud);
+        }
+    }
+
+    ESP_LOGI(TAG, "Flashing at %u baud (~%us expected)...",
+             (unsigned)target_baud,
+             (unsigned)(bin_size * 10u / target_baud));
 
     err = esp_loader_flash_start(0x0, bin_size, 1024);
     if (err != ESP_LOADER_SUCCESS) {
