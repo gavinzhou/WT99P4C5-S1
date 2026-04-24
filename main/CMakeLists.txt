@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS main.cpp c5_flasher.c shutter.c
+    SRCS main.cpp c5_flasher.c shutter.c shutter_test.c
     INCLUDE_DIRS .
     # 2026-04-24 ADR-023 M3.1 note:
     # Adding PRIV_REQUIRES triggers ESP-IDF strict mode — auto-inherited

@@ -34,6 +34,7 @@
 #include "c5_flasher.h"
 #include "esp_hosted.h"      /* esp_hosted_connect_to_slave() */
 #include "esp_hosted_misc.h" /* esp_hosted_register_custom_callback() — ADR-022 backport */
+#include "shutter_test.h"    /* ADR-023 M3.1 regression test */
 
 /* Throughput test config */
 #define TEST_SSID          "HyperFi_CSI_5G"
@@ -341,6 +342,9 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "  Board: WT99P4C5-S1 (P4 + C5)");
     ESP_LOGI(TAG, "  Target: %s via %s (ch36 5G)", IPERF_SERVER_IP, TEST_SSID);
     ESP_LOGI(TAG, "========================================");
+
+    /* ---- ADR-023 M3.1: Spatial Shutter self-test (no-op if fixtures absent) ---- */
+    shutter_run_self_test();
 
     /* ---- Step 1: Flash C5 via UART (conditional) ---- */
 #if C5_DO_FLASH_ON_BOOT

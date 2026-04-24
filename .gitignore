@@ -20,3 +20,6 @@ sdkconfig.before_*
 
 # Large reference PDFs (keep local, not in repo)
 *.pdf
+
+# ADR-023 M3.1: generated test fixtures (run hyperfi/tests/gen_shutter_fixtures.py)
+main/shutter_fixtures.h
