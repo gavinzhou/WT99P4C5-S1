@@ -28,10 +28,20 @@ static const char *TAG = "c5_flasher";
 #define PIN_P4_C5_EN       54   /* → C5 EN, PCB 直连 */
 #define UART_PORT_NUM      1    /* P4 UART1 (UART0 is used by USB-UART) */
 #define BOOT_BAUD_RATE     115200
-/* 2026-04-24 re-enabled: WT99P4C5-S1 onboard trace supports high baud.
- * 921600 → flash time drops from ~131s to ~16s (8x speedup).
- * If we see err=2 TIMEOUT at flash_start, fall back to 460800 or 115200. */
-#define HIGHER_BAUD_RATE   921600
+/* 2026-04-24 Onboard-trace baud staircase (WT99P4C5-S1, P4↔C5 internal trace):
+ *   115200   → 131.0 s  (initial, dupont wires on 2026-04-22)
+ *   921600   →  21.7 s  ( 6× — onboard trace, 55% protocol efficiency)
+ *   1500000  →  15.6 s  (~8× — measured 2026-04-24, 47% protocol efficiency) ← current
+ *   2000000  →   ~14 s  (estimated — ceiling of C5 ROM UART bootloader)
+ *
+ * Per-block protocol overhead (~5 ms / 1KB block × 1336 blocks ≈ 6.5 s) now
+ * dominates over raw UART time at ≥1.5 Mbps. Real speedup past 1.5M requires
+ * bumping the flash block size passed to esp_loader_flash_start() (see below).
+ *
+ * Safety: esp_loader_change_transmission_rate() returns non-success when
+ * slave doesn't ACK. c5_full_flash() falls back to BOOT_BAUD_RATE (115200)
+ * automatically — worst case we get a log warning, not a brick. */
+#define HIGHER_BAUD_RATE   1500000
 
 /* Embedded C5 firmware (see main/CMakeLists.txt EMBED_FILES) */
 extern const uint8_t c5_fw_bin_start[] asm("_binary_c5_fw_bin_start");
