@@ -42,3 +42,7 @@ dependencies:
     version: "^1.7.0"
     rules:
       - if: "target == esp32p4"
+  ## ADR-023 M3.1 — Spatial Shutter IFFT/FFT 加速（V9 benchmark で使用済、
+  ## 128-pt IFFT 138µs、ADR-011 Stage 2 予算 8ms に対し 60× 余裕）
+  espressif/esp-dsp:
+    version: "^1.4.0"
