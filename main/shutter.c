@@ -200,7 +200,44 @@ void shutter_clear_baseline(shutter_state_t *state)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Per-frame processing (STUB — real implementation in next commit)            */
+/* IFFT helper — uses dsps_fft2r_fc32 via conjugate trick                       */
+/* -------------------------------------------------------------------------- */
+/*
+ * ESP-DSP only ships forward FFT (dsps_fft2r_fc32 + dsps_bit_rev_fc32).
+ * IFFT can be computed as:
+ *     ifft(X) = (1/N) · conj(fft(conj(X)))
+ * which means:
+ *   1. Negate imag part of input
+ *   2. Run forward FFT (+ bit reversal)
+ *   3. Negate imag part of output, divide by N
+ *
+ * Input/output buffer is interleaved complex float[2*N]. Operates in-place.
+ */
+static void ifft_inplace(float *cplx, int N)
+{
+    const float inv_N = 1.0f / (float)N;
+    /* conj input */
+    for (int i = 0; i < N; i++) {
+        cplx[2 * i + 1] = -cplx[2 * i + 1];
+    }
+    /* forward FFT + bit-reverse */
+    dsps_fft2r_fc32(cplx, N);
+    dsps_bit_rev_fc32(cplx, N);
+    /* conj output + scale by 1/N */
+    for (int i = 0; i < N; i++) {
+        cplx[2 * i]     *=  inv_N;
+        cplx[2 * i + 1] *= -inv_N;
+    }
+}
+
+static void fft_inplace(float *cplx, int N)
+{
+    dsps_fft2r_fc32(cplx, N);
+    dsps_bit_rev_fc32(cplx, N);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Per-frame processing — real algorithm per hyperfi/csi/shutter.py            */
 /* -------------------------------------------------------------------------- */
 
 esp_err_t shutter_process(
@@ -220,40 +257,130 @@ esp_err_t shutter_process(
 
     state->frame_count++;
 
-    /* TODO(M3.1 Task 3): full IFFT / gate / FFT / baseline-subtract pipeline.
-     *
-     * Implementation outline (matches hyperfi/csi/shutter.py):
-     *
-     * 1. Zero-pad H_freq into work_buf[0..2*n_subcarriers-1], rest = 0.
-     * 2. IFFT:  dsps_fft2r_fc32(work_buf, fft_size); dsps_bit_rev_fc32(...);
-     *           scale by 1/fft_size. Result → h_cir.
-     * 3. Gate:  compute gate_idx from room_size_m + margin_m + spacing.
-     *           Copy h_cir → h_gated; zero out h_gated[gate_idx+1 .. fft_size-gate_idx-1].
-     * 4. If calibrating: h_gated → accumulate into calib_accum; if count reached
-     *    target, average → baseline_cir; set has_baseline; bypass subtraction.
-     * 5. If has_baseline: h_dynamic = h_gated - baseline_cir.
-     *    Compute dynamic_energy_ratio; if quiet, EMA-update baseline_cir.
-     *    If drift > threshold, set needs_recalibration flag.
-     *    Use h_dynamic for reconstruction.
-     * 6. FFT back: run fft2r on output CIR; result bins [0..n_subcarriers-1]
-     *    copied to H_filtered.
-     * 7. Fill metadata (gate_idx, indoor/outdoor power ratio, etc.)
-     *
-     * For now: passthrough (copy H_freq to H_filtered, zero metadata).
-     * Callers will see no filtering, but the build links and the pipeline
-     * plumbing can be integrated into main.cpp while the real algorithm
-     * lands in a separate commit.
-     */
+    const int N_fft = state->cfg.fft_size;
+    const int N_sc  = state->cfg.n_subcarriers;
+    const float spacing = s_subcarrier_spacing_hz[frame_type];
 
-    memcpy(H_filtered, H_freq,
-           (size_t)state->cfg.n_subcarriers * 2 * sizeof(float));
+    /* ---- 1. Zero-pad H_freq into work_buf, IFFT → h_cir ---- */
+    memset(state->work_buf, 0, (size_t)N_fft * 2 * sizeof(float));
+    memcpy(state->work_buf, H_freq, (size_t)N_sc * 2 * sizeof(float));
+    ifft_inplace(state->work_buf, N_fft);
+    memcpy(state->h_cir, state->work_buf, (size_t)N_fft * 2 * sizeof(float));
+
+    /* ---- 2. Compute gate_idx from room size + margin ---- */
+    const float max_distance = state->cfg.room_size_m + state->cfg.margin_m;
+    /* Round-trip delay: signal travels to reflector and back */
+    const float tau_threshold = 2.0f * max_distance / SPEED_OF_LIGHT_MPS;
+    const float bin_time = 1.0f / ((float)N_fft * spacing);
+    int gate_idx = (int)(tau_threshold / bin_time);
+    if (gate_idx > N_fft / 2) gate_idx = N_fft / 2;
+
+    /* ---- 3. Gate: copy h_cir → h_gated, zero out middle bins ---- */
+    memcpy(state->h_gated, state->h_cir, (size_t)N_fft * 2 * sizeof(float));
+    if (gate_idx < N_fft / 2) {
+        const int zero_start = gate_idx + 1;          /* first bin to zero */
+        const int zero_end   = N_fft - gate_idx;      /* one past last bin to zero */
+        memset(&state->h_gated[2 * zero_start], 0,
+               (size_t)(zero_end - zero_start) * 2 * sizeof(float));
+    }
+
+    /* ---- 4. Calibration collection ---- */
+    if (state->calibrating) {
+        for (int i = 0; i < 2 * N_fft; i++) {
+            state->calib_accum[i] += state->h_gated[i];
+        }
+        state->calib_count++;
+        if (state->calib_count >= state->calib_target) {
+            const float inv = 1.0f / (float)state->calib_target;
+            for (int i = 0; i < 2 * N_fft; i++) {
+                state->baseline_cir[i] = state->calib_accum[i] * inv;
+            }
+            state->calibrating  = false;
+            state->has_baseline = true;
+            ESP_LOGI(TAG, "calibration complete (%d frames averaged)", state->calib_target);
+        }
+    }
+
+    /* ---- 5. Baseline subtraction (gated → dynamic) ---- */
+    float dynamic_energy_ratio = 0.0f;
+    float drift_score          = 0.0f;
+    bool  is_quiet             = false;
+    bool  baseline_active      = false;
+    float *out_cir             = state->h_gated;   /* default output if no baseline */
+
+    if (state->has_baseline && !state->calibrating) {
+        baseline_active = true;
+
+        /* h_dynamic = h_gated - baseline_cir */
+        for (int i = 0; i < 2 * N_fft; i++) {
+            state->h_dynamic[i] = state->h_gated[i] - state->baseline_cir[i];
+        }
+
+        /* Power ratios */
+        float baseline_power = 0.0f;
+        float dynamic_power  = 0.0f;
+        for (int i = 0; i < N_fft; i++) {
+            const float br = state->baseline_cir[2 * i];
+            const float bi = state->baseline_cir[2 * i + 1];
+            const float dr = state->h_dynamic[2 * i];
+            const float di = state->h_dynamic[2 * i + 1];
+            baseline_power += br * br + bi * bi;
+            dynamic_power  += dr * dr + di * di;
+        }
+        dynamic_energy_ratio = dynamic_power / (baseline_power + 1e-10f);
+        is_quiet = (dynamic_energy_ratio < state->cfg.quiet_energy_threshold);
+
+        if (is_quiet) {
+            /* EMA update of baseline */
+            const float a = state->cfg.baseline_ema_alpha;
+            const float one_minus_a = 1.0f - a;
+            for (int i = 0; i < 2 * N_fft; i++) {
+                state->baseline_cir[i] =
+                    a * state->h_gated[i] + one_minus_a * state->baseline_cir[i];
+            }
+            drift_score = dynamic_energy_ratio;
+            if (drift_score > state->cfg.drift_threshold) {
+                state->needs_recalibration = true;
+            }
+        }
+
+        out_cir = state->h_dynamic;
+    }
+
+    /* ---- 6. Forward FFT of out_cir → H_filtered ---- */
+    memcpy(state->work_buf, out_cir, (size_t)N_fft * 2 * sizeof(float));
+    fft_inplace(state->work_buf, N_fft);
+    memcpy(H_filtered, state->work_buf, (size_t)N_sc * 2 * sizeof(float));
+
+    /* ---- 7. Metadata: indoor/outdoor power ratio from h_cir ---- */
+    float indoor_power  = 0.0f;
+    float outdoor_power = 0.0f;
+    for (int i = 0; i <= gate_idx; i++) {
+        const float r = state->h_cir[2 * i];
+        const float im = state->h_cir[2 * i + 1];
+        indoor_power += r * r + im * im;
+    }
+    for (int i = gate_idx + 1; i < N_fft / 2; i++) {
+        const float r = state->h_cir[2 * i];
+        const float im = state->h_cir[2 * i + 1];
+        outdoor_power += r * r + im * im;
+    }
 
     if (meta) {
-        memset(meta, 0, sizeof(*meta));
         meta->frame_count          = state->frame_count;
-        meta->baseline_active      = state->has_baseline;
+        meta->gate_idx             = gate_idx;
+        meta->indoor_power_ratio   = indoor_power / (indoor_power + outdoor_power + 1e-10f);
+        meta->snr_improvement_db   = 10.0f *
+            log10f((indoor_power + 1e-10f) / (outdoor_power + 1e-10f));
+        meta->baseline_active      = baseline_active;
         meta->calibrating          = state->calibrating;
+        meta->calibration_progress = state->calibrating && state->calib_target > 0
+            ? (float)state->calib_count / (float)state->calib_target
+            : 0.0f;
+        meta->dynamic_energy_ratio = dynamic_energy_ratio;
+        meta->drift_score          = drift_score;
         meta->needs_recalibration  = state->needs_recalibration;
+        meta->is_quiet             = is_quiet;
     }
 
     return ESP_OK;
