@@ -35,6 +35,7 @@
 #include "esp_hosted.h"      /* esp_hosted_connect_to_slave() */
 #include "esp_hosted_misc.h" /* esp_hosted_register_custom_callback() — ADR-022 backport */
 #include "shutter_test.h"    /* ADR-023 M3.1 regression test */
+#include "m32_test.h"        /* ADR-023 M3.2 regression test (Poincaré + Collapse) */
 
 /* Throughput test config */
 #define TEST_SSID          "HyperFi_CSI_5G"
@@ -345,6 +346,9 @@ extern "C" void app_main(void)
 
     /* ---- ADR-023 M3.1: Spatial Shutter self-test (no-op if fixtures absent) ---- */
     shutter_run_self_test();
+
+    /* ---- ADR-023 M3.2: Poincaré + Collapse self-test ---- */
+    m32_run_self_test();
 
     /* ---- Step 1: Flash C5 via UART (conditional) ---- */
 #if C5_DO_FLASH_ON_BOOT

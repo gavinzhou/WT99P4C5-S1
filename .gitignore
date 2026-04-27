@@ -23,3 +23,6 @@ sdkconfig.before_*
 
 # ADR-023 M3.1: generated test fixtures (run hyperfi/tests/gen_shutter_fixtures.py)
 main/shutter_fixtures.h
+
+# ADR-023 M3.2: generated test fixtures (run hyperfi/tests/gen_m32_fixtures.py)
+main/m32_fixtures.h
