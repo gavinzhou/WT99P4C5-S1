@@ -36,6 +36,8 @@
 #include "esp_hosted_misc.h" /* esp_hosted_register_custom_callback() — ADR-022 backport */
 #include "shutter_test.h"    /* ADR-023 M3.1 regression test */
 #include "m32_test.h"        /* ADR-023 M3.2 regression test (Poincaré + Collapse) */
+#include "m33_test.h"        /* ADR-023 M3.3 regression test (Metrics + Quiet Detector) */
+#include "m34_test.h"        /* ADR-023 M3.4 regression test (Fall Detector — Stage I) */
 
 /* Throughput test config */
 #define TEST_SSID          "HyperFi_CSI_5G"
@@ -349,6 +351,12 @@ extern "C" void app_main(void)
 
     /* ---- ADR-023 M3.2: Poincaré + Collapse self-test ---- */
     m32_run_self_test();
+
+    /* ---- ADR-023 M3.3: Metrics + Quiet Detector self-test ---- */
+    m33_run_self_test();
+
+    /* ---- ADR-023 M3.4: Fall Detector (Stage I post-filter) self-test ---- */
+    m34_run_self_test();
 
     /* ---- Step 1: Flash C5 via UART (conditional) ---- */
 #if C5_DO_FLASH_ON_BOOT
