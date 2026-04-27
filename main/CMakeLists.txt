@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS main.cpp c5_flasher.c shutter.c shutter_test.c poincare.c collapse.c m32_test.c metrics.c m33_test.c fall_detector.c m34_test.c pipeline.c proto_codec.c m35_proto_test.c
+    SRCS main.cpp c5_flasher.c shutter.c shutter_test.c poincare.c collapse.c m32_test.c metrics.c m33_test.c fall_detector.c m34_test.c pipeline.c proto_codec.c m35_proto_test.c mqtt_publisher.c
          # M3.5.1 — vendored nanopb runtime (3 files) + pre-generated proto (.pb.c).
          # Vendored from https://github.com/nanopb/nanopb tag nanopb-0.4.8.
          pb_common.c pb_encode.c pb_decode.c
@@ -29,6 +29,8 @@ idf_component_register(
         # M3.5.0+ : board BSP exposes bsp_eth_init() for direct USB-Ethernet
         # connection to Mac (avoids C5 SoftAP routing for MQTT).
         wt99p4c5_s1_board
+        # M3.5.2 : esp-mqtt client (built into IDF) for telemetry/event publishing
+        mqtt
     EMBED_FILES c5_fw.bin)
 
 # ---------------------------------------------------------------------------

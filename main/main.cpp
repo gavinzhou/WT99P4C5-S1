@@ -40,6 +40,7 @@
 #include "m34_test.h"        /* ADR-023 M3.4 regression test (Fall Detector — Stage I) */
 #include "pipeline.h"        /* ADR-023 M3.5.0 live CSI → algorithm chain */
 #include "m35_proto_test.h"  /* ADR-023 M3.5.1 protobuf encode/decode roundtrip */
+#include "mqtt_publisher.h"  /* ADR-023 M3.5.2 ETH static IP + esp-mqtt publish */
 #include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
 
 /* Throughput test config */
@@ -114,15 +115,15 @@ static void on_slave_diag(uint32_t msg_id, const uint8_t *data,
     printf("[SLAVE] %s\n", buf);
 }
 
-/* Telemetry callback — print one line per 1Hz emission. C linkage so it
- * matches pipeline_telemetry_cb_t exactly (avoids C++ lambda ABI corner cases). */
+/* Telemetry callback — print one console line + publish via MQTT.
+ * C linkage so it matches pipeline_telemetry_cb_t exactly. */
 extern "C" void log_telemetry_cb(const pipeline_telemetry_t *t, void *ctx)
 {
     (void)ctx;
     ESP_LOGI(TAG,
              "[telemetry] ts=%llu  C=%.4f state=%d quiet=%d  "
              "norm_cv=%.3f shape=%.3f  G=%.1f  fps=%.0f n=%d  "
-             "rssi=%d  fall=%d conf=%.2f%s%s",
+             "rssi=%d  fall=%d conf=%.2f%s%s  mqtt=%s",
              (unsigned long long)t->timestamp_us,
              (double)t->collapse_index, (int)t->fsm_state, (int)t->quiet_period,
              (double)t->norm_cv, (double)t->shape_corr, (double)t->dynamic_gain_G,
@@ -131,7 +132,14 @@ extern "C" void log_telemetry_cb(const pipeline_telemetry_t *t, void *ctx)
              (int)t->fall_detected, (double)t->fall_confidence,
              t->fall_event_rising_edge ? "  ★EVENT" : "",
              (t->fall_best_pattern_idx >= 0 && t->fall_event_rising_edge)
-                 ? t->fall_best_pattern_name : "");
+                 ? t->fall_best_pattern_name : "",
+             mqtt_publisher_is_connected() ? "ON" : "OFF");
+
+    /* M3.5.2: publish to MQTT (drops silently if broker disconnected). */
+    mqtt_publisher_publish_telemetry(t);
+    if (t->fall_event_rising_edge) {
+        mqtt_publisher_publish_alert(t);
+    }
 }
 
 static void on_csi_from_slave(uint32_t msg_id, const uint8_t *data,
@@ -501,6 +509,21 @@ extern "C" void app_main(void)
         while (1) vTaskDelay(pdMS_TO_TICKS(1000));
     }
     ESP_LOGI(TAG, "[Step 2] ✓ esp_wifi_init OK");
+
+    /* ---- ADR-023 M3.5.2: bring up Ethernet (static IP) + esp-mqtt ----
+     * ETH and Wi-Fi run independently: Wi-Fi via C5 carries CSI traffic,
+     * Ethernet (USB-Eth direct to Mac) carries MQTT to local mosquitto.
+     * Started here so MQTT can begin retrying broker connect in parallel
+     * with Wi-Fi association below. */
+    {
+        const mqtt_publisher_config_t mqcfg = MQTT_PUBLISHER_CONFIG_DEFAULT();
+        if (mqtt_publisher_init(&mqcfg) == ESP_OK) {
+            ESP_LOGI(TAG, "[MQTT] M3.5.2 ready — broker=%s, telemetry will publish once connected",
+                     mqcfg.broker_uri);
+        } else {
+            ESP_LOGW(TAG, "[MQTT] init failed — telemetry will only print to console");
+        }
+    }
 
     /* ---- Step 3: Configure STA + connect to HyperFi_CSI_5G ---- */
     wifi_config_t wifi_config = {};
