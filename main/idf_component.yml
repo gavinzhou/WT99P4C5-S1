@@ -46,3 +46,8 @@ dependencies:
   ## 128-pt IFFT 138µs、ADR-011 Stage 2 予算 8ms に対し 60× 余裕）
   espressif/esp-dsp:
     version: "^1.4.0"
+  ## ADR-023 M3.5.1 — nanopb is NOT on the ESP component registry under any
+  ## reasonable namespace (verified 2026-04-27 via `idf.py add-dependency`).
+  ## We vendor the 7 runtime files (pb.h, pb_{common,encode,decode}.{h,c}) +
+  ## pre-generated telemetry.pb.{c,h} into main/. See CMakeLists.txt.
+  ## Vendor source: https://github.com/nanopb/nanopb tag nanopb-0.4.8

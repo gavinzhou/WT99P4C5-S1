@@ -39,6 +39,7 @@
 #include "m33_test.h"        /* ADR-023 M3.3 regression test (Metrics + Quiet Detector) */
 #include "m34_test.h"        /* ADR-023 M3.4 regression test (Fall Detector — Stage I) */
 #include "pipeline.h"        /* ADR-023 M3.5.0 live CSI → algorithm chain */
+#include "m35_proto_test.h"  /* ADR-023 M3.5.1 protobuf encode/decode roundtrip */
 #include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
 
 /* Throughput test config */
@@ -394,6 +395,9 @@ extern "C" void app_main(void)
 
     /* ---- ADR-023 M3.4: Fall Detector (Stage I post-filter) self-test ---- */
     m34_run_self_test();
+
+    /* ---- ADR-023 M3.5.1: protobuf encode/decode roundtrip self-test ---- */
+    m35_run_proto_self_test();
 
     /* ---- ADR-023 M3.5.0: bring up live pipeline (CSI → algorithms → telemetry) ---- */
     if (pipeline_init(NULL) == ESP_OK) {

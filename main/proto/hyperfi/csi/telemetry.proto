@@ -1,0 +1,71 @@
+// HyperFi runtime telemetry + alert (ADR-023 M3.5).
+//
+// Published from ESP32-P4 firmware to:
+//   hyperfi/{device_id}/telemetry   — 1 Hz TelemetryReport (~120 B)
+//   hyperfi/{device_id}/event       — event-triggered AlertReport (~200 B)
+//
+// Contents mirror pipeline_telemetry_t in
+// WT99P4C5-S1/main/pipeline.h. Authoritative schema reference:
+// hyperfi/docs/adr/ADR-023-m3-e2e-pipeline.md §195-236.
+//
+// Bounded sizes (for nanopb static-allocation codegen) live in
+// telemetry.options alongside this file.
+//
+// Copyright (c) 2026 Pacport Inc. All rights reserved.
+
+syntax = "proto3";
+package hyperfi.csi;
+
+option go_package = "github.com/gavinzhou/hyperfi/gen/go/hyperfi/csi";
+
+message TelemetryReport {
+  uint64 timestamp_us = 1;
+
+  // Collapse Index (P1 patent — primary motion signal, robust to per-frame
+  // CSI noise, see ADR-023 errata 2026-04-27).
+  float  collapse_index_max  = 2;
+  float  collapse_index_mean = 3;
+
+  // Poincaré embedding — exactly 8 floats (POINCARE_EMBED_DIM).
+  repeated float poincare_embed = 4 [packed = true];
+  float          embedding_norm = 5;
+
+  // Per-window metrics (M3.3) — see ADR-023 errata: norm_cv / shape_corr
+  // are noisy on raw 8-bit ESP32-C5 CSI; telemetry observation only until
+  // M3.5.x preprocessing lands.
+  float  norm_cv      = 6;
+  float  raw_cv       = 7;
+  float  shape_corr   = 8;
+  float  dynamic_gain = 9;            // G — patent 式 8 sum aggregation
+  bool   quiet_period = 10;
+  uint32 n_valid_subcarriers = 11;
+
+  // FSM state — string per ADR-023 §222.
+  string fsm_state = 12;              // "MONITORING" | "SPIKE_DETECTED"
+
+  // CSI link health
+  int32  rssi           = 13;
+  int32  noise_floor    = 14;
+  float  csi_fps        = 15;
+  uint32 csi_drop_count = 16;
+  uint32 n_frames_in_window = 17;
+
+  // Device health
+  uint32 heap_free_bytes = 18;
+  uint32 uptime_ms       = 19;
+}
+
+message AlertReport {
+  uint64 timestamp_us = 1;
+
+  string event_type           = 2;    // "fall_detected"
+  float  collapse_index_peak  = 3;
+  float  confidence           = 4;
+  string matched_pattern      = 5;
+  int32  best_pattern_idx     = 6;
+
+  // Latest TelemetryReport snapshot for alert context — embedded per
+  // ADR-023 §235 so the dashboard can render alerts without a separate
+  // telemetry lookup. `optional` makes nanopb emit `has_snapshot`.
+  optional TelemetryReport snapshot = 10;
+}

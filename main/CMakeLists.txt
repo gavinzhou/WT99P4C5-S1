@@ -1,6 +1,10 @@
 idf_component_register(
-    SRCS main.cpp c5_flasher.c shutter.c shutter_test.c poincare.c collapse.c m32_test.c metrics.c m33_test.c fall_detector.c m34_test.c pipeline.c
-    INCLUDE_DIRS .
+    SRCS main.cpp c5_flasher.c shutter.c shutter_test.c poincare.c collapse.c m32_test.c metrics.c m33_test.c fall_detector.c m34_test.c pipeline.c proto_codec.c m35_proto_test.c
+         # M3.5.1 — vendored nanopb runtime (3 files) + pre-generated proto (.pb.c).
+         # Vendored from https://github.com/nanopb/nanopb tag nanopb-0.4.8.
+         pb_common.c pb_encode.c pb_decode.c
+         proto/hyperfi/csi/telemetry.pb.c
+    INCLUDE_DIRS . proto/hyperfi/csi
     # 2026-04-24 ADR-023 M3.1 note:
     # Adding PRIV_REQUIRES triggers ESP-IDF strict mode — auto-inherited
     # "common" components are no longer implicit. Must list every component
@@ -26,6 +30,17 @@ idf_component_register(
         # connection to Mac (avoids C5 SoftAP routing for MQTT).
         wt99p4c5_s1_board
     EMBED_FILES c5_fw.bin)
+
+# ---------------------------------------------------------------------------
+# ADR-023 M3.5.1 — nanopb is vendored (see SRCS list above).
+# Pre-generated proto/hyperfi/csi/telemetry.pb.{c,h} regenerate via:
+#
+#   cd WT99P4C5-S1/main
+#   python3 ~/nanopb-vendor/generator/nanopb_generator.py \
+#       proto/hyperfi/csi/telemetry.proto
+#
+# Run after any change to telemetry.proto or telemetry.options.
+# ---------------------------------------------------------------------------
 
 idf_component_get_property(LVGL_LIB lvgl__lvgl COMPONENT_LIB)
 target_compile_options(

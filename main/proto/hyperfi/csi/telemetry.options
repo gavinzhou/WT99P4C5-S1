@@ -1,0 +1,9 @@
+# nanopb size hints for telemetry.proto (ADR-023 M3.5).
+# Used by protoc-gen-nanopb to emit static-allocation C structs.
+
+# poincare_embed: exactly POINCARE_EMBED_DIM = 8 (see WT99P4C5-S1/main/poincare.h).
+hyperfi.csi.TelemetryReport.poincare_embed   max_count:8, fixed_count:true
+hyperfi.csi.TelemetryReport.fsm_state        max_size:24
+
+hyperfi.csi.AlertReport.event_type           max_size:32
+hyperfi.csi.AlertReport.matched_pattern      max_size:32
