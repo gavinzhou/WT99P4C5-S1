@@ -41,7 +41,17 @@
 #include "pipeline.h"        /* ADR-023 M3.5.0 live CSI → algorithm chain */
 #include "m35_proto_test.h"  /* ADR-023 M3.5.1 protobuf encode/decode roundtrip */
 #include "mqtt_publisher.h"  /* ADR-023 M3.5.2 ETH static IP + esp-mqtt publish */
+#include "load_test.h"       /* ADR-024 eval — C5 WiFi uplink airtime stress */
 #include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
+
+/* Set 1 to spawn the C5 WiFi uplink load test after Wi-Fi STA connects.
+ * The test ramps UDP traffic 0→1000 kbps to 192.168.4.1:9999 (discard
+ * port) and lets you read CSI fps degradation from the existing
+ * csi_stats_task lines. Total runtime ~3.5 minutes. Set back to 0 for
+ * normal operation. See load_test.h. */
+#ifndef HYPERFI_LOAD_TEST_ENABLED
+#define HYPERFI_LOAD_TEST_ENABLED 1
+#endif
 
 /* Throughput test config */
 #define TEST_SSID          "HyperFi_CSI_5G"
@@ -539,6 +549,24 @@ extern "C" void app_main(void)
     /* CSI-trigger actively sends UDP so AP replies trigger CSI on slave side. */
     xTaskCreate(csi_trigger_task, "csi_trig", 4096, NULL, 4, NULL);
     xTaskCreate(throughput_test_task, "thrpt", 8192, NULL, 5, NULL);
+
+#if HYPERFI_LOAD_TEST_ENABLED
+    /* ADR-024 evaluation — measure CSI fps degradation under varying
+     * C5-radio uplink load. Sends UDP datagrams to 192.168.4.1:9999
+     * (no listener; SoftAP drops). Eyeball the [CSI] stats lines and
+     * the [load_test] step lines in the monitor to correlate fps vs
+     * upload kbps. Disable by setting HYPERFI_LOAD_TEST_ENABLED to 0. */
+    {
+        const load_test_config_t lt_cfg = LOAD_TEST_CONFIG_DEFAULT();
+        if (load_test_start(&lt_cfg) == ESP_OK) {
+            ESP_LOGI(TAG, "[load_test] task spawned — warm-up %ds, then "
+                          "ramp 0→1000 kbps × 30s/step",
+                     lt_cfg.warmup_sec);
+        } else {
+            ESP_LOGW(TAG, "[load_test] failed to spawn");
+        }
+    }
+#endif
 
     /* Idle loop — throughput task takes over */
     while (1) {
