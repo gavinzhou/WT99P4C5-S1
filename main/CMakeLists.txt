@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS main.cpp c5_flasher.c shutter.c shutter_test.c poincare.c collapse.c m32_test.c metrics.c m33_test.c fall_detector.c m34_test.c
+    SRCS main.cpp c5_flasher.c shutter.c shutter_test.c poincare.c collapse.c m32_test.c metrics.c m33_test.c fall_detector.c m34_test.c pipeline.c
     INCLUDE_DIRS .
     # 2026-04-24 ADR-023 M3.1 note:
     # Adding PRIV_REQUIRES triggers ESP-IDF strict mode — auto-inherited
@@ -22,6 +22,9 @@ idf_component_register(
         # Custom components / managed components
         espressif__esp_hosted
         espressif__esp-serial-flasher
+        # M3.5.0+ : board BSP exposes bsp_eth_init() for direct USB-Ethernet
+        # connection to Mac (avoids C5 SoftAP routing for MQTT).
+        wt99p4c5_s1_board
     EMBED_FILES c5_fw.bin)
 
 idf_component_get_property(LVGL_LIB lvgl__lvgl COMPONENT_LIB)

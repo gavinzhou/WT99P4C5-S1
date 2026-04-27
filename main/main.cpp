@@ -38,6 +38,8 @@
 #include "m32_test.h"        /* ADR-023 M3.2 regression test (Poincaré + Collapse) */
 #include "m33_test.h"        /* ADR-023 M3.3 regression test (Metrics + Quiet Detector) */
 #include "m34_test.h"        /* ADR-023 M3.4 regression test (Fall Detector — Stage I) */
+#include "pipeline.h"        /* ADR-023 M3.5.0 live CSI → algorithm chain */
+#include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
 
 /* Throughput test config */
 #define TEST_SSID          "HyperFi_CSI_5G"
@@ -111,6 +113,26 @@ static void on_slave_diag(uint32_t msg_id, const uint8_t *data,
     printf("[SLAVE] %s\n", buf);
 }
 
+/* Telemetry callback — print one line per 1Hz emission. C linkage so it
+ * matches pipeline_telemetry_cb_t exactly (avoids C++ lambda ABI corner cases). */
+extern "C" void log_telemetry_cb(const pipeline_telemetry_t *t, void *ctx)
+{
+    (void)ctx;
+    ESP_LOGI(TAG,
+             "[telemetry] ts=%llu  C=%.4f state=%d quiet=%d  "
+             "norm_cv=%.3f shape=%.3f  G=%.1f  fps=%.0f n=%d  "
+             "rssi=%d  fall=%d conf=%.2f%s%s",
+             (unsigned long long)t->timestamp_us,
+             (double)t->collapse_index, (int)t->fsm_state, (int)t->quiet_period,
+             (double)t->norm_cv, (double)t->shape_corr, (double)t->dynamic_gain_G,
+             (double)t->csi_fps, t->n_frames_in_window,
+             t->rssi_avg,
+             (int)t->fall_detected, (double)t->fall_confidence,
+             t->fall_event_rising_edge ? "  ★EVENT" : "",
+             (t->fall_best_pattern_idx >= 0 && t->fall_event_rising_edge)
+                 ? t->fall_best_pattern_name : "");
+}
+
 static void on_csi_from_slave(uint32_t msg_id, const uint8_t *data,
                               size_t data_len, void *ctx)
 {
@@ -134,6 +156,21 @@ static void on_csi_from_slave(uint32_t msg_id, const uint8_t *data,
 
     s_csi_frames_received++;
     s_csi_bytes_received += data_len;
+
+    /* ADR-023 M3.5.0 — feed frame into live pipeline.
+     * Wire IQ payload starts immediately after the header. */
+    const size_t hdr_sz = sizeof(hyperfi_csi_wire_hdr_t);
+    const size_t iq_len = data_len - hdr_sz;
+    /* HT20 expects 53 SC × 2 (Im,Re) × 1B = 106 B. Defensive bound. */
+    if (iq_len >= (size_t)(2 * 53)) {
+        const int8_t *iq = (const int8_t *)(data + hdr_sz);
+        pipeline_on_csi_frame(
+            esp_timer_get_time(),
+            hdr->rssi,
+            hdr->noise_floor,
+            iq,
+            53);
+    }
 }
 
 static void csi_stats_task(void *arg)
@@ -357,6 +394,14 @@ extern "C" void app_main(void)
 
     /* ---- ADR-023 M3.4: Fall Detector (Stage I post-filter) self-test ---- */
     m34_run_self_test();
+
+    /* ---- ADR-023 M3.5.0: bring up live pipeline (CSI → algorithms → telemetry) ---- */
+    if (pipeline_init(NULL) == ESP_OK) {
+        pipeline_register_telemetry_cb(&log_telemetry_cb, NULL);
+        ESP_LOGI(TAG, "[Pipeline] M3.5.0 ready — telemetry will emit at 1Hz");
+    } else {
+        ESP_LOGE(TAG, "[Pipeline] init failed — pipeline disabled");
+    }
 
     /* ---- Step 1: Flash C5 via UART (conditional) ---- */
 #if C5_DO_FLASH_ON_BOOT
