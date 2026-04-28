@@ -23,3 +23,9 @@ hyperfi.csi.EventWindowSnapshot.poincare_embed   max_count:8, fixed_count:true
 # them as type:FT_CALLBACK rather than fixing a max_count.
 hyperfi.csi.EventRawContext.frames           type:FT_CALLBACK
 hyperfi.csi.EventRawContext.windows          type:FT_CALLBACK
+
+# M3.6.2 upload-protocol message bounds.
+hyperfi.csi.UploadRequest.device_id          max_size:32
+hyperfi.csi.UploadResponse.device_id         max_size:32
+hyperfi.csi.UploadResponse.upload_url        max_size:512
+hyperfi.csi.UploadDone.device_id             max_size:32

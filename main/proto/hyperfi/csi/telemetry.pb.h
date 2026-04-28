@@ -99,6 +99,29 @@ typedef struct _hyperfi_csi_EventRawContext {
     pb_callback_t windows;
 } hyperfi_csi_EventRawContext;
 
+typedef struct _hyperfi_csi_UploadRequest {
+    char device_id[32];
+    uint64_t event_id;
+    uint32_t size_bytes; /* length of the EventRawContext blob */
+    uint64_t event_ts_us;
+} hyperfi_csi_UploadRequest;
+
+typedef struct _hyperfi_csi_UploadResponse {
+    char device_id[32];
+    uint64_t event_id; /* echoes request, lets P4 correlate */
+    char upload_url[512]; /* presigned PUT URL (≤ 512 chars) */
+    uint32_t expires_sec; /* URL valid window */
+} hyperfi_csi_UploadResponse;
+
+typedef struct _hyperfi_csi_UploadDone {
+    char device_id[32];
+    uint64_t event_id;
+    bool success;
+    int32_t http_status; /* -1 if upload didn't reach server */
+    uint32_t bytes_uploaded;
+    uint32_t elapsed_ms;
+} hyperfi_csi_UploadDone;
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -110,11 +133,17 @@ extern "C" {
 #define hyperfi_csi_EventCSIFrame_init_default   {0, 0, 0, 0, {0, {0}}}
 #define hyperfi_csi_EventWindowSnapshot_init_default {0, 0, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0}
 #define hyperfi_csi_EventRawContext_init_default {"", 0, 0, 0, 0, 0, 0, "", 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define hyperfi_csi_UploadRequest_init_default   {"", 0, 0, 0}
+#define hyperfi_csi_UploadResponse_init_default  {"", 0, "", 0}
+#define hyperfi_csi_UploadDone_init_default      {"", 0, 0, 0, 0, 0}
 #define hyperfi_csi_TelemetryReport_init_zero    {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0}
 #define hyperfi_csi_AlertReport_init_zero        {0, "", 0, 0, "", 0, false, hyperfi_csi_TelemetryReport_init_zero}
 #define hyperfi_csi_EventCSIFrame_init_zero      {0, 0, 0, 0, {0, {0}}}
 #define hyperfi_csi_EventWindowSnapshot_init_zero {0, 0, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0}
 #define hyperfi_csi_EventRawContext_init_zero    {"", 0, 0, 0, 0, 0, 0, "", 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define hyperfi_csi_UploadRequest_init_zero      {"", 0, 0, 0}
+#define hyperfi_csi_UploadResponse_init_zero     {"", 0, "", 0}
+#define hyperfi_csi_UploadDone_init_zero         {"", 0, 0, 0, 0, 0}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define hyperfi_csi_TelemetryReport_timestamp_us_tag 1
@@ -170,6 +199,20 @@ extern "C" {
 #define hyperfi_csi_EventRawContext_best_pattern_idx_tag 9
 #define hyperfi_csi_EventRawContext_frames_tag   10
 #define hyperfi_csi_EventRawContext_windows_tag  11
+#define hyperfi_csi_UploadRequest_device_id_tag  1
+#define hyperfi_csi_UploadRequest_event_id_tag   2
+#define hyperfi_csi_UploadRequest_size_bytes_tag 3
+#define hyperfi_csi_UploadRequest_event_ts_us_tag 4
+#define hyperfi_csi_UploadResponse_device_id_tag 1
+#define hyperfi_csi_UploadResponse_event_id_tag  2
+#define hyperfi_csi_UploadResponse_upload_url_tag 3
+#define hyperfi_csi_UploadResponse_expires_sec_tag 4
+#define hyperfi_csi_UploadDone_device_id_tag     1
+#define hyperfi_csi_UploadDone_event_id_tag      2
+#define hyperfi_csi_UploadDone_success_tag       3
+#define hyperfi_csi_UploadDone_http_status_tag   4
+#define hyperfi_csi_UploadDone_bytes_uploaded_tag 5
+#define hyperfi_csi_UploadDone_elapsed_ms_tag    6
 
 /* Struct field encoding specification for nanopb */
 #define hyperfi_csi_TelemetryReport_FIELDLIST(X, a) \
@@ -248,11 +291,40 @@ X(a, CALLBACK, REPEATED, MESSAGE,  windows,          11)
 #define hyperfi_csi_EventRawContext_frames_MSGTYPE hyperfi_csi_EventCSIFrame
 #define hyperfi_csi_EventRawContext_windows_MSGTYPE hyperfi_csi_EventWindowSnapshot
 
+#define hyperfi_csi_UploadRequest_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, STRING,   device_id,         1) \
+X(a, STATIC,   SINGULAR, UINT64,   event_id,          2) \
+X(a, STATIC,   SINGULAR, UINT32,   size_bytes,        3) \
+X(a, STATIC,   SINGULAR, UINT64,   event_ts_us,       4)
+#define hyperfi_csi_UploadRequest_CALLBACK NULL
+#define hyperfi_csi_UploadRequest_DEFAULT NULL
+
+#define hyperfi_csi_UploadResponse_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, STRING,   device_id,         1) \
+X(a, STATIC,   SINGULAR, UINT64,   event_id,          2) \
+X(a, STATIC,   SINGULAR, STRING,   upload_url,        3) \
+X(a, STATIC,   SINGULAR, UINT32,   expires_sec,       4)
+#define hyperfi_csi_UploadResponse_CALLBACK NULL
+#define hyperfi_csi_UploadResponse_DEFAULT NULL
+
+#define hyperfi_csi_UploadDone_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, STRING,   device_id,         1) \
+X(a, STATIC,   SINGULAR, UINT64,   event_id,          2) \
+X(a, STATIC,   SINGULAR, BOOL,     success,           3) \
+X(a, STATIC,   SINGULAR, INT32,    http_status,       4) \
+X(a, STATIC,   SINGULAR, UINT32,   bytes_uploaded,    5) \
+X(a, STATIC,   SINGULAR, UINT32,   elapsed_ms,        6)
+#define hyperfi_csi_UploadDone_CALLBACK NULL
+#define hyperfi_csi_UploadDone_DEFAULT NULL
+
 extern const pb_msgdesc_t hyperfi_csi_TelemetryReport_msg;
 extern const pb_msgdesc_t hyperfi_csi_AlertReport_msg;
 extern const pb_msgdesc_t hyperfi_csi_EventCSIFrame_msg;
 extern const pb_msgdesc_t hyperfi_csi_EventWindowSnapshot_msg;
 extern const pb_msgdesc_t hyperfi_csi_EventRawContext_msg;
+extern const pb_msgdesc_t hyperfi_csi_UploadRequest_msg;
+extern const pb_msgdesc_t hyperfi_csi_UploadResponse_msg;
+extern const pb_msgdesc_t hyperfi_csi_UploadDone_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define hyperfi_csi_TelemetryReport_fields &hyperfi_csi_TelemetryReport_msg
@@ -260,14 +332,20 @@ extern const pb_msgdesc_t hyperfi_csi_EventRawContext_msg;
 #define hyperfi_csi_EventCSIFrame_fields &hyperfi_csi_EventCSIFrame_msg
 #define hyperfi_csi_EventWindowSnapshot_fields &hyperfi_csi_EventWindowSnapshot_msg
 #define hyperfi_csi_EventRawContext_fields &hyperfi_csi_EventRawContext_msg
+#define hyperfi_csi_UploadRequest_fields &hyperfi_csi_UploadRequest_msg
+#define hyperfi_csi_UploadResponse_fields &hyperfi_csi_UploadResponse_msg
+#define hyperfi_csi_UploadDone_fields &hyperfi_csi_UploadDone_msg
 
 /* Maximum encoded size of messages (where known) */
 /* hyperfi_csi_EventRawContext_size depends on runtime parameters */
-#define HYPERFI_CSI_PROTO_HYPERFI_CSI_TELEMETRY_PB_H_MAX_SIZE hyperfi_csi_AlertReport_size
+#define HYPERFI_CSI_PROTO_HYPERFI_CSI_TELEMETRY_PB_H_MAX_SIZE hyperfi_csi_UploadResponse_size
 #define hyperfi_csi_AlertReport_size             275
 #define hyperfi_csi_EventCSIFrame_size           170
 #define hyperfi_csi_EventWindowSnapshot_size     104
 #define hyperfi_csi_TelemetryReport_size         174
+#define hyperfi_csi_UploadDone_size              69
+#define hyperfi_csi_UploadRequest_size           61
+#define hyperfi_csi_UploadResponse_size          564
 
 #ifdef __cplusplus
 } /* extern "C" */

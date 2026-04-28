@@ -21,4 +21,13 @@ PB_BIND(hyperfi_csi_EventWindowSnapshot, hyperfi_csi_EventWindowSnapshot, AUTO)
 PB_BIND(hyperfi_csi_EventRawContext, hyperfi_csi_EventRawContext, AUTO)
 
 
+PB_BIND(hyperfi_csi_UploadRequest, hyperfi_csi_UploadRequest, AUTO)
+
+
+PB_BIND(hyperfi_csi_UploadResponse, hyperfi_csi_UploadResponse, 2)
+
+
+PB_BIND(hyperfi_csi_UploadDone, hyperfi_csi_UploadDone, AUTO)
+
+
 

@@ -78,6 +78,26 @@ void mqtt_publisher_publish_telemetry(const pipeline_telemetry_t *t);
  */
 void mqtt_publisher_publish_alert(const pipeline_telemetry_t *t);
 
+/* -------------------------------------------------------------------------- */
+/* Shared accessors for other modules (M3.6 event_uploader)                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Returns the underlying esp-mqtt client handle, or NULL if not initialized.
+ * Other modules (event_uploader) can use it to subscribe to additional
+ * topics + publish raw payloads without spinning up a second client.
+ *
+ * Cast-typed to void* so callers don't need to include esp-mqtt headers
+ * just to receive the handle.
+ */
+void *mqtt_publisher_get_client(void);
+
+/**
+ * Returns the locally-derived device_id (e.g. "p4-aabbcc"), or NULL if
+ * not initialized. Pointer remains valid for the program lifetime.
+ */
+const char *mqtt_publisher_get_device_id(void);
+
 #ifdef __cplusplus
 }
 #endif

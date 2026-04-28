@@ -127,3 +127,33 @@ message EventRawContext {
   repeated EventCSIFrame       frames  = 10;
   repeated EventWindowSnapshot windows = 11;
 }
+
+// M3.6.2 — request/response for the presigned-URL upload protocol.
+//
+// P4 publishes UploadRequest on hyperfi/{device}/raw/request when ready
+// to upload an EventRawContext. Mac mock (M3 PoC) or AWS Lambda (Phase 2)
+// responds with the URL on hyperfi/{device}/raw/upload_url. After the
+// HTTPS PUT completes, P4 publishes UploadDone on hyperfi/{device}/raw/done.
+
+message UploadRequest {
+  string device_id   = 1;
+  uint64 event_id    = 2;
+  uint32 size_bytes  = 3;     // length of the EventRawContext blob
+  uint64 event_ts_us = 4;
+}
+
+message UploadResponse {
+  string device_id   = 1;
+  uint64 event_id    = 2;     // echoes request, lets P4 correlate
+  string upload_url  = 3;     // presigned PUT URL (≤ 512 chars)
+  uint32 expires_sec = 4;     // URL valid window
+}
+
+message UploadDone {
+  string device_id      = 1;
+  uint64 event_id       = 2;
+  bool   success        = 3;
+  int32  http_status    = 4;  // -1 if upload didn't reach server
+  uint32 bytes_uploaded = 5;
+  uint32 elapsed_ms     = 6;
+}

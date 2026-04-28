@@ -43,6 +43,8 @@
 #include "mqtt_publisher.h"  /* ADR-023 M3.5.2 ETH static IP + esp-mqtt publish */
 #include "load_test.h"       /* ADR-024 eval — C5 WiFi uplink airtime stress */
 #include "m36_test.h"        /* ADR-023 M3.6.0 event_buffer regression test */
+#include "event_uploader.h"  /* ADR-023 M3.6.2 raw context cloud upload */
+#include "event_orchestrator.h"  /* ADR-023 M3.6.4 fall→buffer→encode→upload glue */
 #include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
 
 /* Set 1 to spawn the C5 WiFi uplink load test after Wi-Fi STA connects.
@@ -151,6 +153,10 @@ extern "C" void log_telemetry_cb(const pipeline_telemetry_t *t, void *ctx)
     if (t->fall_event_rising_edge) {
         mqtt_publisher_publish_alert(t);
     }
+
+    /* M3.6.4: kick off the rolling-buffer→encode→cloud chain. No-op when
+     * fall_event_rising_edge is false, so it's cheap on every emit. */
+    event_orchestrator_handle(t);
 }
 
 static void on_csi_from_slave(uint32_t msg_id, const uint8_t *data,
@@ -536,6 +542,25 @@ extern "C" void app_main(void)
                      mqcfg.broker_uri);
         } else {
             ESP_LOGW(TAG, "[MQTT] init failed — telemetry will only print to console");
+        }
+
+        /* M3.6.2: piggyback on the same MQTT client for raw-context upload
+         * request/response. Subscribe to upload_url, ready to fire HTTPS PUT
+         * once a fall_event triggers the M3.6.4 wiring. */
+        const event_uploader_config_t ucfg = EVENT_UPLOADER_CONFIG_DEFAULT();
+        if (event_uploader_init(&ucfg) == ESP_OK) {
+            ESP_LOGI(TAG, "[Uploader] M3.6.2 ready — raw context PUT chain armed");
+        } else {
+            ESP_LOGW(TAG, "[Uploader] init failed — raw context upload disabled");
+        }
+
+        /* M3.6.4: orchestrator that turns fall_event_rising_edge into the
+         * snapshot → encode → upload chain. */
+        const event_orchestrator_config_t ocfg = EVENT_ORCHESTRATOR_CONFIG_DEFAULT();
+        if (event_orchestrator_init(&ocfg) == ESP_OK) {
+            ESP_LOGI(TAG, "[Orchestrator] M3.6.4 ready — fall→cloud chain wired");
+        } else {
+            ESP_LOGW(TAG, "[Orchestrator] init failed — fall events will not upload");
         }
     }
 

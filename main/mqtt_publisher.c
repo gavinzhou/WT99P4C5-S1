@@ -252,3 +252,17 @@ void mqtt_publisher_publish_alert(const pipeline_telemetry_t *t)
     publish_blob(s.topic_event, buf, n, /*qos=*/1);
     ESP_LOGI(TAG, "★ alert published (%d B)", n);
 }
+
+/* -------------------------------------------------------------------------- */
+/* Shared accessors                                                            */
+/* -------------------------------------------------------------------------- */
+
+void *mqtt_publisher_get_client(void)
+{
+    return s.inited ? (void *)s.client : NULL;
+}
+
+const char *mqtt_publisher_get_device_id(void)
+{
+    return s.inited ? s.device_id : NULL;
+}

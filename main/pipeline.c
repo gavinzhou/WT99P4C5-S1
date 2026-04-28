@@ -19,6 +19,7 @@
 #include "poincare.h"
 #include "collapse.h"
 #include "fall_detector.h"
+#include "event_buffer.h"
 
 static const char *TAG = "pipeline";
 
@@ -106,6 +107,22 @@ esp_err_t pipeline_init(const pipeline_config_t *cfg)
 
     /* ---- Collapse ---- */
     collapse_config_t col_cfg = COLLAPSE_CONFIG_DEFAULT();
+    /* M3.6.4 E2E HACK (2026-04-28): default thresholds (0.12/0.04) are tuned
+     * for an actual human falling; live ambient C in the lab sits at 0.005-
+     * 0.035, so a non-fall test gesture (walk past, sit down) never crosses.
+     * Lower them here ONLY so we can exercise the fall→snapshot→upload chain.
+     * **Restore to 0.12 / 0.04 before the MFR pilot** — see ADR-023 errata
+     * + tech-debt note "M3.6.4 collapse threshold E2E hack". Self-test
+     * (m32_test.c) still uses COLLAPSE_CONFIG_DEFAULT() so its fixtures
+     * remain valid. */
+    /* Iteration 2 (2026-04-28 evening): with 0.025/0.008 the FSM kept
+     * cycling SPIKE→timeout→MONITORING because baseline C drifts at
+     * 0.005-0.020, never giving 3 consecutive silent steps below 0.008.
+     * Bumped to 0.040/0.020 — peak C in test was 0.061, so 0.040 is
+     * still cleared by ordinary motion, and baseline often dips below
+     * 0.020 for 3+ seconds when the room is still. */
+    col_cfg.collapse_threshold = 0.040f;
+    col_cfg.silence_threshold  = 0.020f;
     if (collapse_init(&g_pipe.collapse, &col_cfg) != ESP_OK || !g_pipe.collapse) {
         ESP_LOGE(TAG, "collapse_init failed");
         goto err;
@@ -113,7 +130,11 @@ esp_err_t pipeline_init(const pipeline_config_t *cfg)
 
     /* ---- Quiet detector + Fall detector (transparent structs) ---- */
     quiet_detector_init(&g_pipe.quiet_det, NULL);
-    fall_detector_init(&g_pipe.fall_det, NULL);
+    /* Match the lowered collapse threshold so feature-vector spike_duration
+     * calculation still has data above the gate. (Same E2E hack as above.) */
+    fall_detector_config_t fd_cfg = FALL_DETECTOR_CONFIG_DEFAULT();
+    fd_cfg.spike_threshold = 0.020f;
+    fall_detector_init(&g_pipe.fall_det, &fd_cfg);
 
     /* ---- Per-frame scratch ---- */
     g_pipe.h_freq_complex  = psram_calloc(2 * N_sc, sizeof(float));
@@ -337,6 +358,27 @@ static void emit_window(uint64_t now_us)
     t.noise_floor_avg   = noise_avg;
     t.csi_drop_count    = g_pipe.window_drop_count;
 
+    /* M3.6.4: push derived per-window snapshot into the Tier B buffer.
+     * No-op if event_buffer isn't inited. */
+    {
+        ev_buf_window_t evw;
+        memset(&evw, 0, sizeof(evw));
+        evw.ts_us           = t.timestamp_us;
+        evw.collapse_index  = t.collapse_index;
+        evw.norm_cv         = t.norm_cv;
+        evw.raw_cv          = t.raw_cv;
+        evw.shape_corr      = t.shape_corr;
+        evw.dynamic_gain_G  = t.dynamic_gain_G;
+        evw.embedding_norm  = t.embedding_norm;
+        for (int i = 0; i < EV_BUF_EMBED_DIM; i++)
+            evw.poincare_embed[i] = t.poincare_embed[i];
+        evw.rssi_avg        = t.rssi_avg;
+        evw.fsm_state       = (uint16_t)t.fsm_state;
+        evw.flags           = (uint16_t)((t.quiet_period   ? 0x1 : 0) |
+                                         (t.fall_detected ? 0x2 : 0));
+        event_buffer_push_window(&evw);
+    }
+
     if (g_pipe.cb) g_pipe.cb(&t, g_pipe.cb_ctx);
 
     /* Reset stride counters */
@@ -390,6 +432,18 @@ void pipeline_on_csi_frame(
     }
 
     ring_push(ts_us, g_pipe.amp_per_sc);
+
+    /* M3.6.4: also push raw CSI into the Tier B rolling buffer.
+     * No-op if event_buffer isn't inited. ~3 µs per frame. */
+    {
+        ev_buf_frame_t evf;
+        memset(&evf, 0, sizeof(evf));
+        evf.ts_us       = ts_us;
+        evf.rssi        = rssi;
+        evf.noise_floor = noise_floor;
+        memcpy(evf.iq, iq_data, EV_BUF_IQ_BYTES);
+        event_buffer_push_frame(&evf);
+    }
 
     g_pipe.rssi_sum  += rssi;
     g_pipe.noise_sum += noise_floor;
