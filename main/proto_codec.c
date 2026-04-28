@@ -169,3 +169,113 @@ const char *proto_codec_get_fsm_state(const void *s)
 {
     return ((const hyperfi_csi_TelemetryReport *)s)->fsm_state;
 }
+
+/* -------------------------------------------------------------------------- */
+/* M3.6 — EventRawContext streaming encoder                                    */
+/* -------------------------------------------------------------------------- */
+
+/* Context for the frames callback: walks snap->frames in order. */
+typedef struct {
+    const event_buffer_snapshot_t *snap;
+} frames_cb_ctx_t;
+
+/* Encode one EventCSIFrame submessage given a single ev_buf_frame_t. */
+static bool encode_one_frame(pb_ostream_t *stream,
+                              const pb_field_iter_t *field,
+                              void * const *arg)
+{
+    const frames_cb_ctx_t *ctx = (const frames_cb_ctx_t *)*arg;
+    const event_buffer_snapshot_t *snap = ctx->snap;
+
+    for (int i = 0; i < snap->n_frames; i++) {
+        const ev_buf_frame_t *src = &snap->frames[i];
+        hyperfi_csi_EventCSIFrame msg = hyperfi_csi_EventCSIFrame_init_zero;
+        msg.ts_us       = src->ts_us;
+        msg.seq         = src->seq;
+        msg.rssi        = src->rssi;
+        msg.noise_floor = src->noise_floor;
+        msg.iq_data.size = EV_BUF_IQ_BYTES;
+        memcpy(msg.iq_data.bytes, src->iq, EV_BUF_IQ_BYTES);
+
+        /* Each repeated submessage needs a fresh tag + length prefix. */
+        if (!pb_encode_tag_for_field(stream, field)) return false;
+        if (!pb_encode_submessage(stream, hyperfi_csi_EventCSIFrame_fields, &msg)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+typedef struct {
+    const event_buffer_snapshot_t *snap;
+} windows_cb_ctx_t;
+
+static bool encode_one_window(pb_ostream_t *stream,
+                               const pb_field_iter_t *field,
+                               void * const *arg)
+{
+    const windows_cb_ctx_t *ctx = (const windows_cb_ctx_t *)*arg;
+    const event_buffer_snapshot_t *snap = ctx->snap;
+
+    for (int i = 0; i < snap->n_windows; i++) {
+        const ev_buf_window_t *src = &snap->windows[i];
+        hyperfi_csi_EventWindowSnapshot msg = hyperfi_csi_EventWindowSnapshot_init_zero;
+        msg.ts_us          = src->ts_us;
+        msg.collapse_index = src->collapse_index;
+        msg.norm_cv        = src->norm_cv;
+        msg.raw_cv         = src->raw_cv;
+        msg.shape_corr     = src->shape_corr;
+        msg.dynamic_gain   = src->dynamic_gain_G;
+        msg.embedding_norm = src->embedding_norm;
+        for (int k = 0; k < 8; k++) msg.poincare_embed[k] = src->poincare_embed[k];
+        msg.rssi_avg       = src->rssi_avg;
+        msg.fsm_state      = src->fsm_state;
+        msg.flags          = src->flags;
+
+        if (!pb_encode_tag_for_field(stream, field)) return false;
+        if (!pb_encode_submessage(stream, hyperfi_csi_EventWindowSnapshot_fields, &msg)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int proto_codec_encode_event_raw_context(
+    const event_buffer_snapshot_t  *snap,
+    const proto_codec_event_meta_t *meta,
+    uint8_t                        *buf,
+    size_t                          buf_size)
+{
+    if (!snap || !meta || !buf || buf_size == 0) return -1;
+
+    hyperfi_csi_EventRawContext top = hyperfi_csi_EventRawContext_init_zero;
+
+    if (meta->device_id) {
+        strncpy(top.device_id, meta->device_id, sizeof(top.device_id) - 1);
+    }
+    top.event_id            = meta->event_id;
+    top.event_ts_us         = snap->event_ts_us;
+    top.pre_sec             = snap->pre_sec;
+    top.post_sec            = snap->post_sec;
+    top.collapse_index_peak = meta->collapse_index_peak;
+    top.confidence          = meta->confidence;
+    if (meta->matched_pattern) {
+        strncpy(top.matched_pattern, meta->matched_pattern,
+                sizeof(top.matched_pattern) - 1);
+    }
+    top.best_pattern_idx = meta->best_pattern_idx;
+
+    frames_cb_ctx_t  fctx = { .snap = snap };
+    windows_cb_ctx_t wctx = { .snap = snap };
+    top.frames.funcs.encode  = &encode_one_frame;
+    top.frames.arg           = &fctx;
+    top.windows.funcs.encode = &encode_one_window;
+    top.windows.arg          = &wctx;
+
+    pb_ostream_t stream = pb_ostream_from_buffer(buf, buf_size);
+    if (!pb_encode(&stream, hyperfi_csi_EventRawContext_fields, &top)) {
+        ESP_LOGE(TAG, "encode EventRawContext: %s", PB_GET_ERROR(&stream));
+        return -1;
+    }
+    return (int)stream.bytes_written;
+}

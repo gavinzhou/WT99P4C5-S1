@@ -55,6 +55,50 @@ typedef struct _hyperfi_csi_AlertReport {
     hyperfi_csi_TelemetryReport snapshot;
 } hyperfi_csi_AlertReport;
 
+typedef PB_BYTES_ARRAY_T(128) hyperfi_csi_EventCSIFrame_iq_data_t;
+/* One CSI frame, bounded for nanopb static codegen. */
+typedef struct _hyperfi_csi_EventCSIFrame {
+    uint64_t ts_us;
+    uint32_t seq;
+    int32_t rssi;
+    int32_t noise_floor;
+    hyperfi_csi_EventCSIFrame_iq_data_t iq_data; /* 106 bytes for HT20 8-bit (max in .options) */
+} hyperfi_csi_EventCSIFrame;
+
+/* Per-window derived snapshot (mirrors event_buffer.h ev_buf_window_t). */
+typedef struct _hyperfi_csi_EventWindowSnapshot {
+    uint64_t ts_us;
+    float collapse_index;
+    float norm_cv;
+    float raw_cv;
+    float shape_corr;
+    float dynamic_gain;
+    float embedding_norm;
+    float poincare_embed[8]; /* exactly 8 floats */
+    int32_t rssi_avg;
+    uint32_t fsm_state; /* 0=MONITORING, 1=SPIKE_DETECTED */
+    uint32_t flags; /* bit0=quiet_period, bit1=fall_detected */
+} hyperfi_csi_EventWindowSnapshot;
+
+/* Top-level alert raw context blob. */
+typedef struct _hyperfi_csi_EventRawContext {
+    char device_id[32];
+    uint64_t event_id;
+    uint64_t event_ts_us;
+    float pre_sec;
+    float post_sec;
+    /* Alert metadata captured at trigger time. */
+    float collapse_index_peak;
+    float confidence;
+    char matched_pattern[32];
+    int32_t best_pattern_idx;
+    /* Frames + per-window snapshots in chronological order.
+ On firmware these encode via nanopb pb_callback_t streaming directly
+ from event_buffer's PSRAM rings — no double-buffering. */
+    pb_callback_t frames;
+    pb_callback_t windows;
+} hyperfi_csi_EventRawContext;
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -63,8 +107,14 @@ extern "C" {
 /* Initializer values for message structs */
 #define hyperfi_csi_TelemetryReport_init_default {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0}
 #define hyperfi_csi_AlertReport_init_default     {0, "", 0, 0, "", 0, false, hyperfi_csi_TelemetryReport_init_default}
+#define hyperfi_csi_EventCSIFrame_init_default   {0, 0, 0, 0, {0, {0}}}
+#define hyperfi_csi_EventWindowSnapshot_init_default {0, 0, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0}
+#define hyperfi_csi_EventRawContext_init_default {"", 0, 0, 0, 0, 0, 0, "", 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define hyperfi_csi_TelemetryReport_init_zero    {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0}
 #define hyperfi_csi_AlertReport_init_zero        {0, "", 0, 0, "", 0, false, hyperfi_csi_TelemetryReport_init_zero}
+#define hyperfi_csi_EventCSIFrame_init_zero      {0, 0, 0, 0, {0, {0}}}
+#define hyperfi_csi_EventWindowSnapshot_init_zero {0, 0, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0}
+#define hyperfi_csi_EventRawContext_init_zero    {"", 0, 0, 0, 0, 0, 0, "", 0, {{NULL}, NULL}, {{NULL}, NULL}}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define hyperfi_csi_TelemetryReport_timestamp_us_tag 1
@@ -93,6 +143,33 @@ extern "C" {
 #define hyperfi_csi_AlertReport_matched_pattern_tag 5
 #define hyperfi_csi_AlertReport_best_pattern_idx_tag 6
 #define hyperfi_csi_AlertReport_snapshot_tag     10
+#define hyperfi_csi_EventCSIFrame_ts_us_tag      1
+#define hyperfi_csi_EventCSIFrame_seq_tag        2
+#define hyperfi_csi_EventCSIFrame_rssi_tag       3
+#define hyperfi_csi_EventCSIFrame_noise_floor_tag 4
+#define hyperfi_csi_EventCSIFrame_iq_data_tag    5
+#define hyperfi_csi_EventWindowSnapshot_ts_us_tag 1
+#define hyperfi_csi_EventWindowSnapshot_collapse_index_tag 2
+#define hyperfi_csi_EventWindowSnapshot_norm_cv_tag 3
+#define hyperfi_csi_EventWindowSnapshot_raw_cv_tag 4
+#define hyperfi_csi_EventWindowSnapshot_shape_corr_tag 5
+#define hyperfi_csi_EventWindowSnapshot_dynamic_gain_tag 6
+#define hyperfi_csi_EventWindowSnapshot_embedding_norm_tag 7
+#define hyperfi_csi_EventWindowSnapshot_poincare_embed_tag 8
+#define hyperfi_csi_EventWindowSnapshot_rssi_avg_tag 9
+#define hyperfi_csi_EventWindowSnapshot_fsm_state_tag 10
+#define hyperfi_csi_EventWindowSnapshot_flags_tag 11
+#define hyperfi_csi_EventRawContext_device_id_tag 1
+#define hyperfi_csi_EventRawContext_event_id_tag 2
+#define hyperfi_csi_EventRawContext_event_ts_us_tag 3
+#define hyperfi_csi_EventRawContext_pre_sec_tag  4
+#define hyperfi_csi_EventRawContext_post_sec_tag 5
+#define hyperfi_csi_EventRawContext_collapse_index_peak_tag 6
+#define hyperfi_csi_EventRawContext_confidence_tag 7
+#define hyperfi_csi_EventRawContext_matched_pattern_tag 8
+#define hyperfi_csi_EventRawContext_best_pattern_idx_tag 9
+#define hyperfi_csi_EventRawContext_frames_tag   10
+#define hyperfi_csi_EventRawContext_windows_tag  11
 
 /* Struct field encoding specification for nanopb */
 #define hyperfi_csi_TelemetryReport_FIELDLIST(X, a) \
@@ -130,16 +207,66 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  snapshot,         10)
 #define hyperfi_csi_AlertReport_DEFAULT NULL
 #define hyperfi_csi_AlertReport_snapshot_MSGTYPE hyperfi_csi_TelemetryReport
 
+#define hyperfi_csi_EventCSIFrame_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT64,   ts_us,             1) \
+X(a, STATIC,   SINGULAR, UINT32,   seq,               2) \
+X(a, STATIC,   SINGULAR, INT32,    rssi,              3) \
+X(a, STATIC,   SINGULAR, INT32,    noise_floor,       4) \
+X(a, STATIC,   SINGULAR, BYTES,    iq_data,           5)
+#define hyperfi_csi_EventCSIFrame_CALLBACK NULL
+#define hyperfi_csi_EventCSIFrame_DEFAULT NULL
+
+#define hyperfi_csi_EventWindowSnapshot_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT64,   ts_us,             1) \
+X(a, STATIC,   SINGULAR, FLOAT,    collapse_index,    2) \
+X(a, STATIC,   SINGULAR, FLOAT,    norm_cv,           3) \
+X(a, STATIC,   SINGULAR, FLOAT,    raw_cv,            4) \
+X(a, STATIC,   SINGULAR, FLOAT,    shape_corr,        5) \
+X(a, STATIC,   SINGULAR, FLOAT,    dynamic_gain,      6) \
+X(a, STATIC,   SINGULAR, FLOAT,    embedding_norm,    7) \
+X(a, STATIC,   FIXARRAY, FLOAT,    poincare_embed,    8) \
+X(a, STATIC,   SINGULAR, INT32,    rssi_avg,          9) \
+X(a, STATIC,   SINGULAR, UINT32,   fsm_state,        10) \
+X(a, STATIC,   SINGULAR, UINT32,   flags,            11)
+#define hyperfi_csi_EventWindowSnapshot_CALLBACK NULL
+#define hyperfi_csi_EventWindowSnapshot_DEFAULT NULL
+
+#define hyperfi_csi_EventRawContext_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, STRING,   device_id,         1) \
+X(a, STATIC,   SINGULAR, UINT64,   event_id,          2) \
+X(a, STATIC,   SINGULAR, UINT64,   event_ts_us,       3) \
+X(a, STATIC,   SINGULAR, FLOAT,    pre_sec,           4) \
+X(a, STATIC,   SINGULAR, FLOAT,    post_sec,          5) \
+X(a, STATIC,   SINGULAR, FLOAT,    collapse_index_peak,   6) \
+X(a, STATIC,   SINGULAR, FLOAT,    confidence,        7) \
+X(a, STATIC,   SINGULAR, STRING,   matched_pattern,   8) \
+X(a, STATIC,   SINGULAR, INT32,    best_pattern_idx,   9) \
+X(a, CALLBACK, REPEATED, MESSAGE,  frames,           10) \
+X(a, CALLBACK, REPEATED, MESSAGE,  windows,          11)
+#define hyperfi_csi_EventRawContext_CALLBACK pb_default_field_callback
+#define hyperfi_csi_EventRawContext_DEFAULT NULL
+#define hyperfi_csi_EventRawContext_frames_MSGTYPE hyperfi_csi_EventCSIFrame
+#define hyperfi_csi_EventRawContext_windows_MSGTYPE hyperfi_csi_EventWindowSnapshot
+
 extern const pb_msgdesc_t hyperfi_csi_TelemetryReport_msg;
 extern const pb_msgdesc_t hyperfi_csi_AlertReport_msg;
+extern const pb_msgdesc_t hyperfi_csi_EventCSIFrame_msg;
+extern const pb_msgdesc_t hyperfi_csi_EventWindowSnapshot_msg;
+extern const pb_msgdesc_t hyperfi_csi_EventRawContext_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define hyperfi_csi_TelemetryReport_fields &hyperfi_csi_TelemetryReport_msg
 #define hyperfi_csi_AlertReport_fields &hyperfi_csi_AlertReport_msg
+#define hyperfi_csi_EventCSIFrame_fields &hyperfi_csi_EventCSIFrame_msg
+#define hyperfi_csi_EventWindowSnapshot_fields &hyperfi_csi_EventWindowSnapshot_msg
+#define hyperfi_csi_EventRawContext_fields &hyperfi_csi_EventRawContext_msg
 
 /* Maximum encoded size of messages (where known) */
+/* hyperfi_csi_EventRawContext_size depends on runtime parameters */
 #define HYPERFI_CSI_PROTO_HYPERFI_CSI_TELEMETRY_PB_H_MAX_SIZE hyperfi_csi_AlertReport_size
 #define hyperfi_csi_AlertReport_size             275
+#define hyperfi_csi_EventCSIFrame_size           170
+#define hyperfi_csi_EventWindowSnapshot_size     104
 #define hyperfi_csi_TelemetryReport_size         174
 
 #ifdef __cplusplus

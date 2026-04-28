@@ -42,6 +42,7 @@
 #include "m35_proto_test.h"  /* ADR-023 M3.5.1 protobuf encode/decode roundtrip */
 #include "mqtt_publisher.h"  /* ADR-023 M3.5.2 ETH static IP + esp-mqtt publish */
 #include "load_test.h"       /* ADR-024 eval — C5 WiFi uplink airtime stress */
+#include "m36_test.h"        /* ADR-023 M3.6.0 event_buffer regression test */
 #include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
 
 /* Set 1 to spawn the C5 WiFi uplink load test after Wi-Fi STA connects.
@@ -50,7 +51,7 @@
  * csi_stats_task lines. Total runtime ~3.5 minutes. Set back to 0 for
  * normal operation. See load_test.h. */
 #ifndef HYPERFI_LOAD_TEST_ENABLED
-#define HYPERFI_LOAD_TEST_ENABLED 1
+#define HYPERFI_LOAD_TEST_ENABLED 0
 #endif
 
 /* Throughput test config */
@@ -416,6 +417,9 @@ extern "C" void app_main(void)
 
     /* ---- ADR-023 M3.5.1: protobuf encode/decode roundtrip self-test ---- */
     m35_run_proto_self_test();
+
+    /* ---- ADR-023 M3.6.0: event_buffer rolling buffer self-test ---- */
+    m36_run_self_test();
 
     /* ---- ADR-023 M3.5.0: bring up live pipeline (CSI → algorithms → telemetry) ---- */
     if (pipeline_init(NULL) == ESP_OK) {

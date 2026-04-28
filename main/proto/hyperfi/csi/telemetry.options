@@ -7,3 +7,19 @@ hyperfi.csi.TelemetryReport.fsm_state        max_size:24
 
 hyperfi.csi.AlertReport.event_type           max_size:32
 hyperfi.csi.AlertReport.matched_pattern      max_size:32
+
+# M3.6 Tier B — strings in EventRawContext.
+hyperfi.csi.EventRawContext.device_id        max_size:32
+hyperfi.csi.EventRawContext.matched_pattern  max_size:32
+
+# EventCSIFrame.iq_data: 106 bytes for HT20 53 SC × 2 × 8-bit.
+hyperfi.csi.EventCSIFrame.iq_data            max_size:128
+
+# EventWindowSnapshot.poincare_embed: exactly 8 floats.
+hyperfi.csi.EventWindowSnapshot.poincare_embed   max_count:8, fixed_count:true
+
+# Repeated EventCSIFrame / EventWindowSnapshot in EventRawContext —
+# encode via callback (firmware streams from PSRAM ring), so we mark
+# them as type:FT_CALLBACK rather than fixing a max_count.
+hyperfi.csi.EventRawContext.frames           type:FT_CALLBACK
+hyperfi.csi.EventRawContext.windows          type:FT_CALLBACK

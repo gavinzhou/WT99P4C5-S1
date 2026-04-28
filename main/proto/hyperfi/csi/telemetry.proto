@@ -69,3 +69,61 @@ message AlertReport {
   // telemetry lookup. `optional` makes nanopb emit `has_snapshot`.
   optional TelemetryReport snapshot = 10;
 }
+
+// ============================================================
+// ADR-023 M3.6 Tier B — alert event raw CSI context upload.
+//
+// Published from P4 to:
+//   hyperfi/{device_id}/raw/request   — request presigned URL (small)
+//   <https URL from broker>           — PUT EventRawContext blob (~1.5 MB)
+//   hyperfi/{device_id}/raw/done      — completion notice
+//
+// Wire size: ~1.5 MB for HT20 53 SC × 60s × 200fps = 12000 frames.
+// Encoded as protobuf using nanopb pb_callback_t streaming so we don't
+// materialize the whole array in a static struct.
+// ============================================================
+
+// One CSI frame, bounded for nanopb static codegen.
+message EventCSIFrame {
+  uint64 ts_us       = 1;
+  uint32 seq         = 2;
+  int32  rssi        = 3;
+  int32  noise_floor = 4;
+  bytes  iq_data     = 5;        // 106 bytes for HT20 8-bit (max in .options)
+}
+
+// Per-window derived snapshot (mirrors event_buffer.h ev_buf_window_t).
+message EventWindowSnapshot {
+  uint64 ts_us           = 1;
+  float  collapse_index  = 2;
+  float  norm_cv         = 3;
+  float  raw_cv          = 4;
+  float  shape_corr      = 5;
+  float  dynamic_gain    = 6;
+  float  embedding_norm  = 7;
+  repeated float poincare_embed = 8 [packed = true];   // exactly 8 floats
+  int32  rssi_avg        = 9;
+  uint32 fsm_state       = 10;   // 0=MONITORING, 1=SPIKE_DETECTED
+  uint32 flags           = 11;   // bit0=quiet_period, bit1=fall_detected
+}
+
+// Top-level alert raw context blob.
+message EventRawContext {
+  string device_id              = 1;
+  uint64 event_id               = 2;
+  uint64 event_ts_us            = 3;
+  float  pre_sec                = 4;
+  float  post_sec               = 5;
+
+  // Alert metadata captured at trigger time.
+  float  collapse_index_peak    = 6;
+  float  confidence             = 7;
+  string matched_pattern        = 8;
+  int32  best_pattern_idx       = 9;
+
+  // Frames + per-window snapshots in chronological order.
+  // On firmware these encode via nanopb pb_callback_t streaming directly
+  // from event_buffer's PSRAM rings — no double-buffering.
+  repeated EventCSIFrame       frames  = 10;
+  repeated EventWindowSnapshot windows = 11;
+}

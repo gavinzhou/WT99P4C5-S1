@@ -21,6 +21,7 @@
 #include <stdint.h>
 
 #include "pipeline.h"
+#include "event_buffer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +29,12 @@ extern "C" {
 
 #define PROTO_TELEMETRY_BUF_SIZE   192
 #define PROTO_ALERT_BUF_SIZE       384
+
+/* M3.6 EventRawContext upper bound:
+ *   hdr (~120 B) + 12000 × ~135 B encoded frames + 60 × ~80 B windows ≈ 1.65 MB
+ * Round up to 2 MB so PSRAM allocation is comfortable.
+ * Caller obtains PSRAM via heap_caps_calloc(MALLOC_CAP_SPIRAM). */
+#define PROTO_EVENT_BUF_SIZE       (2 * 1024 * 1024)
 
 /**
  * Encode a TelemetryReport from a pipeline snapshot.
@@ -75,6 +82,36 @@ int32_t  proto_codec_get_rssi(const void *s);
 uint32_t proto_codec_get_n_frames_in_window(const void *s);
 size_t   proto_codec_get_poincare_embed(const void *s, float out8[8]);
 const char *proto_codec_get_fsm_state(const void *s);
+
+/* -------------------------------------------------------------------------- */
+/* M3.6 — EventRawContext encoder (streaming via nanopb pb_callback_t)         */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    const char  *device_id;
+    uint64_t     event_id;
+    float        collapse_index_peak;
+    float        confidence;
+    const char  *matched_pattern;     /* may be NULL */
+    int32_t      best_pattern_idx;
+} proto_codec_event_meta_t;
+
+/**
+ * Encode an EventRawContext from a snapshot + alert metadata.
+ * The repeated frames / windows fields stream from the snapshot via
+ * nanopb callbacks — no intermediate buffer.
+ *
+ * @param[in]  snap   buffer snapshot owned by caller (must outlive encode)
+ * @param[in]  meta   alert metadata, all fields used
+ * @param[out] buf    output buffer (must be PSRAM, ≥ PROTO_EVENT_BUF_SIZE)
+ * @param[in]  buf_size  capacity of buf
+ * @return number of bytes written, or -1 on encoder error
+ */
+int proto_codec_encode_event_raw_context(
+    const event_buffer_snapshot_t  *snap,
+    const proto_codec_event_meta_t *meta,
+    uint8_t                        *buf,
+    size_t                          buf_size);
 
 #ifdef __cplusplus
 }

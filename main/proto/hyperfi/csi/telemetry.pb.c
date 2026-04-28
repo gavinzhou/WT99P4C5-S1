@@ -12,4 +12,13 @@ PB_BIND(hyperfi_csi_TelemetryReport, hyperfi_csi_TelemetryReport, AUTO)
 PB_BIND(hyperfi_csi_AlertReport, hyperfi_csi_AlertReport, AUTO)
 
 
+PB_BIND(hyperfi_csi_EventCSIFrame, hyperfi_csi_EventCSIFrame, AUTO)
+
+
+PB_BIND(hyperfi_csi_EventWindowSnapshot, hyperfi_csi_EventWindowSnapshot, AUTO)
+
+
+PB_BIND(hyperfi_csi_EventRawContext, hyperfi_csi_EventRawContext, AUTO)
+
+
 
