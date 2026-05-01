@@ -31,8 +31,14 @@ extern "C" {
 #define METRICS_NEAR_ZERO_THRESHOLD  3.0f   /* metrics.py:35 — near-zero SC mask */
 #define METRICS_EPSILON              1e-10f
 
-#define METRICS_MOTION_THRESHOLD_NORM_CV  0.10f   /* metrics.py:66 */
-#define METRICS_STATIC_THRESHOLD_NORM_CV  0.05f   /* metrics.py:67 */
+/* Quiet detector still gates on norm_cv — keep this threshold. */
+#define METRICS_STATIC_THRESHOLD_NORM_CV  0.05f
+
+/* Motion classifier switched to collapse_index (P1 patent signal) on
+ * 2026-04-30 after norm_cv showed concept gap on coherent motion (TD-003).
+ * See hyperfi/hyperfi/csi/metrics.py:71-72. */
+#define METRICS_MOTION_THRESHOLD_C  0.025f
+#define METRICS_STATIC_THRESHOLD_C  0.015f
 
 typedef enum {
     METRICS_MOTION_STATE_STATIC         = 0,
@@ -64,9 +70,9 @@ esp_err_t metrics_compute(
     metrics_result_t *result);
 
 /**
- * Classify motion state from norm_cv (metrics.py:70-77).
+ * Classify motion state from collapse_index (metrics.py:75-82, P1 patent signal).
  */
-metrics_motion_state_t metrics_classify_motion(float norm_cv);
+metrics_motion_state_t metrics_classify_motion(float collapse_index);
 
 /**
  * Compute dynamic gain G = sum of per-subcarrier amplitude variances over a

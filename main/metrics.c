@@ -191,14 +191,14 @@ esp_err_t metrics_compute(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Motion classifier (metrics.py:70-77)                                        */
+/* Motion classifier (metrics.py:75-82, collapse_index = P1 patent signal)     */
 /* -------------------------------------------------------------------------- */
 
-metrics_motion_state_t metrics_classify_motion(float norm_cv)
+metrics_motion_state_t metrics_classify_motion(float collapse_index)
 {
-    if (norm_cv >= METRICS_MOTION_THRESHOLD_NORM_CV) {
+    if (collapse_index >= METRICS_MOTION_THRESHOLD_C) {
         return METRICS_MOTION_STATE_MOTION;
-    } else if (norm_cv <= METRICS_STATIC_THRESHOLD_NORM_CV) {
+    } else if (collapse_index <= METRICS_STATIC_THRESHOLD_C) {
         return METRICS_MOTION_STATE_STATIC;
     } else {
         return METRICS_MOTION_STATE_LIGHT_ACTIVITY;

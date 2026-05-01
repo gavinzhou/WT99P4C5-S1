@@ -144,23 +144,23 @@ static int test_quiet_detector(void)
 /* -------- 3. Motion classifier sanity (no fixtures, threshold edges) -------- */
 static int test_motion_classifier(void)
 {
-    ESP_LOGI(TAG, "--- Motion classifier thresholds ---");
+    ESP_LOGI(TAG, "--- Motion classifier thresholds (collapse_index) ---");
     int fail = 0;
     struct {
-        float        ncv;
+        float        c_idx;
         metrics_motion_state_t expected;
         const char  *name;
     } cases[] = {
-        { 0.00f,  METRICS_MOTION_STATE_STATIC,         "ncv=0.00 → STATIC"        },
-        { 0.04f,  METRICS_MOTION_STATE_STATIC,         "ncv=0.04 → STATIC"        },
-        { 0.05f,  METRICS_MOTION_STATE_STATIC,         "ncv=0.05 → STATIC (≤thr)" },
-        { 0.07f,  METRICS_MOTION_STATE_LIGHT_ACTIVITY, "ncv=0.07 → LIGHT"         },
-        { 0.10f,  METRICS_MOTION_STATE_MOTION,         "ncv=0.10 → MOTION (≥thr)" },
-        { 0.30f,  METRICS_MOTION_STATE_MOTION,         "ncv=0.30 → MOTION"        },
+        { 0.000f, METRICS_MOTION_STATE_STATIC,         "C=0.000 → STATIC"        },
+        { 0.010f, METRICS_MOTION_STATE_STATIC,         "C=0.010 → STATIC"        },
+        { 0.015f, METRICS_MOTION_STATE_STATIC,         "C=0.015 → STATIC (≤thr)" },
+        { 0.020f, METRICS_MOTION_STATE_LIGHT_ACTIVITY, "C=0.020 → LIGHT"         },
+        { 0.025f, METRICS_MOTION_STATE_MOTION,         "C=0.025 → MOTION (≥thr)" },
+        { 0.080f, METRICS_MOTION_STATE_MOTION,         "C=0.080 → MOTION"        },
     };
     const int n = sizeof(cases) / sizeof(cases[0]);
     for (int i = 0; i < n; i++) {
-        metrics_motion_state_t got = metrics_classify_motion(cases[i].ncv);
+        metrics_motion_state_t got = metrics_classify_motion(cases[i].c_idx);
         bool ok = (got == cases[i].expected);
         if (!ok) fail++;
         ESP_LOGI(TAG, "  [%-4s] %s  got=%d", ok ? "PASS" : "FAIL",
