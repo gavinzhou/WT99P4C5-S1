@@ -107,22 +107,6 @@ esp_err_t pipeline_init(const pipeline_config_t *cfg)
 
     /* ---- Collapse ---- */
     collapse_config_t col_cfg = COLLAPSE_CONFIG_DEFAULT();
-    /* M3.6.4 E2E HACK (2026-04-28): default thresholds (0.12/0.04) are tuned
-     * for an actual human falling; live ambient C in the lab sits at 0.005-
-     * 0.035, so a non-fall test gesture (walk past, sit down) never crosses.
-     * Lower them here ONLY so we can exercise the fall→snapshot→upload chain.
-     * **Restore to 0.12 / 0.04 before the MFR pilot** — see ADR-023 errata
-     * + tech-debt note "M3.6.4 collapse threshold E2E hack". Self-test
-     * (m32_test.c) still uses COLLAPSE_CONFIG_DEFAULT() so its fixtures
-     * remain valid. */
-    /* Iteration 2 (2026-04-28 evening): with 0.025/0.008 the FSM kept
-     * cycling SPIKE→timeout→MONITORING because baseline C drifts at
-     * 0.005-0.020, never giving 3 consecutive silent steps below 0.008.
-     * Bumped to 0.040/0.020 — peak C in test was 0.061, so 0.040 is
-     * still cleared by ordinary motion, and baseline often dips below
-     * 0.020 for 3+ seconds when the room is still. */
-    col_cfg.collapse_threshold = 0.040f;
-    col_cfg.silence_threshold  = 0.020f;
     if (collapse_init(&g_pipe.collapse, &col_cfg) != ESP_OK || !g_pipe.collapse) {
         ESP_LOGE(TAG, "collapse_init failed");
         goto err;
@@ -130,10 +114,7 @@ esp_err_t pipeline_init(const pipeline_config_t *cfg)
 
     /* ---- Quiet detector + Fall detector (transparent structs) ---- */
     quiet_detector_init(&g_pipe.quiet_det, NULL);
-    /* Match the lowered collapse threshold so feature-vector spike_duration
-     * calculation still has data above the gate. (Same E2E hack as above.) */
     fall_detector_config_t fd_cfg = FALL_DETECTOR_CONFIG_DEFAULT();
-    fd_cfg.spike_threshold = 0.020f;
     fall_detector_init(&g_pipe.fall_det, &fd_cfg);
 
     /* ---- Per-frame scratch ---- */

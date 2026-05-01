@@ -82,3 +82,11 @@ CONFIG_WIFI_RMT_CSI_ENABLED=y
 # ("task still writing Rx data to queue!" warnings at default=20).
 CONFIG_ESP_HOSTED_SDIO_RX_Q_SIZE=50
 CONFIG_ESP_HOSTED_SDIO_TX_Q_SIZE=30
+
+# HyperFi TD-004 v3 (2026-05-01): switch SDIO RX from streaming to packet mode.
+# Vendor recommendation per esp-hosted-mcu#167 + #120 (streaming-mode known
+# unstable under sustained TX/RX burst — host loop block → unbounded slave
+# backlog → grow path OOM panic). Trades 80→33 Mbps peak for stability.
+# HyperFi sustained need ~3 Mbps + ~32 Mbps event-blob burst, fits packet mode.
+# Slave side: see ../hyperfi/firmware/esp-hosted-mcu-vendored/slave/sdkconfig.defaults.esp32c5
+CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_NONE=y
