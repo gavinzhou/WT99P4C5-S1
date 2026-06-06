@@ -15,7 +15,7 @@ dependencies:
   # fork that carries HyperFi patches (double-free fix in rpc_core.c,
   # STA_START duplicate drop in rpc_wrap.c, SDIO debug-printf cleanup).
   #
-  # Repo  : git@github.com:gavinzhou/esp-hosted-mcu.git
+  # Repo  : git@github.com:pacport/esp-hosted-mcu.git  (2026-06-05 PacPort org 迁移済、旧 gavinzhou/esp-hosted-mcu)
   # Branch: hyperfi/host-v2013-backport
   # Tag   : hyperfi-m2.9-host-v2013-backport   (M2.9 E2E CSI 成功时的 snapshot)
   #
