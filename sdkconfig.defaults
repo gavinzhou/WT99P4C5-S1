@@ -9,6 +9,10 @@ CONFIG_EXAMPLE_ENABLE_SD_CARD=y
 CONFIG_EXAMPLE_ENABLE_CAM_SENSOR_PIC_VFLIP=n
 CONFIG_EXAMPLE_ENABLE_CAM_SENSOR_PIC_HFLIP=n
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# esp-dsp: force ANSI C FFT. ESP32-P4 optimized assembly uses esp.lp (ZOL)
+# hardware loop whose LP_COUNT is corrupted by interrupts (IDF v5.5-beta1),
+# causing intermittent shutter FFT garbage/Load-access-fault crashes.
+CONFIG_DSP_ANSI=y
 CONFIG_COMPILER_ORPHAN_SECTIONS_PLACE=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_200M=y
