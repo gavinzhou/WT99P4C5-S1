@@ -62,6 +62,12 @@ typedef struct {
  */
 esp_err_t mqtt_publisher_init(const mqtt_publisher_config_t *cfg);
 
+/**
+ * Cleanup mqtt_publisher: unregister ETH event handlers, stop MQTT client.
+ * Safe to call multiple times. Added for TD-005 fix.
+ */
+void mqtt_publisher_deinit(void);
+
 /** True once the MQTT client has reached MQTT_CONNECTED state. */
 bool mqtt_publisher_is_connected(void);
 

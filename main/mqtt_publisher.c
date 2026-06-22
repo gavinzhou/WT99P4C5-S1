@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_eth.h"
 #include "lwip/inet.h"
 #include "mqtt_client.h"
 
@@ -37,6 +38,11 @@ typedef struct {
     char                       device_id[DEVICE_ID_MAX];
     char                       topic_telemetry[TOPIC_MAX];
     char                       topic_event[TOPIC_MAX];
+
+    /* ETH config for auto-reconnect (TD-005) */
+    char                       eth_ip_str[16];      /* "192.168.10.2" */
+    char                       eth_netmask_str[16]; /* "255.255.255.0" */
+    char                       eth_gateway_str[16]; /* "192.168.10.1" */
 
     /* Counters for visibility in monitor */
     uint32_t                   pub_ok;
@@ -105,6 +111,36 @@ static esp_err_t configure_eth_static_ip(const char *ip_str,
 }
 
 /* -------------------------------------------------------------------------- */
+/* ETH event handler (TD-005 fix)                                             */
+/* -------------------------------------------------------------------------- */
+static void eth_reconnect_handler(void *handler_args, esp_event_base_t base,
+                                  int32_t event_id, void *event_data)
+{
+    (void)handler_args; (void)base; (void)event_data;
+
+    switch (event_id) {
+    case ETHERNET_EVENT_CONNECTED:
+        ESP_LOGI(TAG, "ETH_CONNECTED → reapplying static IP (TD-005 auto-reconnect)");
+        /* Re-apply static IP configuration when ETH link comes back */
+        esp_err_t err = configure_eth_static_ip(s.eth_ip_str,
+                                               s.eth_netmask_str,
+                                               s.eth_gateway_str);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to re-apply static IP: %d", err);
+        } else {
+            ESP_LOGI(TAG, "Static IP re-applied: %s/%s gw=%s",
+                     s.eth_ip_str, s.eth_netmask_str, s.eth_gateway_str);
+        }
+        break;
+    case ETHERNET_EVENT_DISCONNECTED:
+        ESP_LOGW(TAG, "ETH_DISCONNECTED → MQTT will auto-reconnect when ETH recovers");
+        break;
+    default:
+        break;
+    }
+}
+
+/* -------------------------------------------------------------------------- */
 /* MQTT event handler                                                          */
 /* -------------------------------------------------------------------------- */
 static void mqtt_event_cb(void *handler_args, esp_event_base_t base,
@@ -145,6 +181,14 @@ esp_err_t mqtt_publisher_init(const mqtt_publisher_config_t *cfg)
         if (cfg->device_id)    local.device_id   = cfg->device_id;
     }
 
+    /* Store ETH config for auto-reconnect (TD-005) */
+    strncpy(s.eth_ip_str,      local.eth_ip,      sizeof(s.eth_ip_str) - 1);
+    strncpy(s.eth_netmask_str, local.eth_netmask, sizeof(s.eth_netmask_str) - 1);
+    strncpy(s.eth_gateway_str, local.eth_gateway, sizeof(s.eth_gateway_str) - 1);
+    s.eth_ip_str[sizeof(s.eth_ip_str) - 1] = '\0';
+    s.eth_netmask_str[sizeof(s.eth_netmask_str) - 1] = '\0';
+    s.eth_gateway_str[sizeof(s.eth_gateway_str) - 1] = '\0';
+
     /* ---- 1. Bring up Ethernet (BSP) ---- */
     esp_err_t err = bsp_eth_init();
     if (err != ESP_OK) {
@@ -155,6 +199,21 @@ esp_err_t mqtt_publisher_init(const mqtt_publisher_config_t *cfg)
     /* ---- 2. Static IP on ETH netif ---- */
     err = configure_eth_static_ip(local.eth_ip, local.eth_netmask, local.eth_gateway);
     if (err != ESP_OK) return err;
+
+    /* ---- 2.5. Register ETH event handler for auto-reconnect (TD-005) ---- */
+    err = esp_event_handler_register(ETH_EVENT, ETHERNET_EVENT_CONNECTED,
+                                     eth_reconnect_handler, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register ETH_CONNECTED handler: %d", err);
+        return err;
+    }
+    err = esp_event_handler_register(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED,
+                                     eth_reconnect_handler, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register ETH_DISCONNECTED handler: %d", err);
+        return err;
+    }
+    ESP_LOGI(TAG, "ETH auto-reconnect handlers registered (TD-005 fix)");
 
     /* ---- 3. Identity + topics ---- */
     if (local.device_id) {
@@ -174,7 +233,9 @@ esp_err_t mqtt_publisher_init(const mqtt_publisher_config_t *cfg)
         .broker.address.uri    = local.broker_uri,
         .credentials.client_id = s.device_id,
         .session.keepalive     = 60,
-        .network.reconnect_timeout_ms = 2000,
+        .network.reconnect_timeout_ms = 5000,     /* TD-005: longer reconnect timeout */
+        .network.disable_auto_reconnect = false,  /* TD-005: ensure auto-reconnect enabled */
+        .network.timeout_ms = 10000,              /* TD-005: network operation timeout */
     };
     s.client = esp_mqtt_client_init(&mc);
     if (!s.client) {
@@ -265,4 +326,28 @@ void *mqtt_publisher_get_client(void)
 const char *mqtt_publisher_get_device_id(void)
 {
     return s.inited ? s.device_id : NULL;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Cleanup (TD-005)                                                           */
+/* -------------------------------------------------------------------------- */
+
+void mqtt_publisher_deinit(void)
+{
+    if (!s.inited) return;
+
+    /* Unregister ETH event handlers */
+    esp_event_handler_unregister(ETH_EVENT, ETHERNET_EVENT_CONNECTED, eth_reconnect_handler);
+    esp_event_handler_unregister(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED, eth_reconnect_handler);
+
+    /* Stop MQTT client */
+    if (s.client) {
+        esp_mqtt_client_stop(s.client);
+        esp_mqtt_client_destroy(s.client);
+        s.client = NULL;
+    }
+
+    atomic_store(&s.connected, false);
+    s.inited = false;
+    ESP_LOGI(TAG, "mqtt_publisher deinitialized");
 }
