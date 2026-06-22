@@ -38,8 +38,14 @@ dependencies:
     version: "2.0.13"
     override_path: "../../hyperfi/firmware/espressif__esp_hosted"
   ## ADR-020 方案 A — P4 自烧 C5 via UART (esp-serial-flasher library)
+  ## PINNED ==1.11.0: the onboard C5 is esp32c5-eco2 (ROM 2025-01-21). 1.7.0
+  ## (the 2026-04-22 PoC era version) crashes inside esp_loader_connect on
+  ## eco2 silicon (Instruction access fault, garbage PC). 1.11.0 supports
+  ## eco2. NOTE: the long-standing "Connect failed err=2" was NOT a version
+  ## issue — it was a broken P4.IO26→C5.BOOT jumper (C5 booted SPI mode 0x38
+  ## instead of download 0x28); fixed 2026-06-22.
   espressif/esp-serial-flasher:
-    version: "^1.7.0"
+    version: "==1.11.0"
     rules:
       - if: "target == esp32p4"
   ## ADR-023 M3.1 — Spatial Shutter IFFT/FFT 加速（V9 benchmark で使用済、
