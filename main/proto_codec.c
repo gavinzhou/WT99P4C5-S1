@@ -63,6 +63,11 @@ static void fill_telemetry(
 
     out->heap_free_bytes = esp_get_free_heap_size();
     out->uptime_ms       = (uint32_t)(esp_timer_get_time() / 1000ULL);
+
+    /* M4.3 breathing */
+    out->breathing_bpm        = t->breathing_bpm;
+    out->breathing_confidence = t->breathing_confidence;
+    out->breathing_state      = t->breathing_state;
 }
 
 int proto_codec_encode_telemetry(

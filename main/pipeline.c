@@ -20,6 +20,7 @@
 #include "collapse.h"
 #include "fall_detector.h"
 #include "event_buffer.h"
+#include "breathing.h"
 
 static const char *TAG = "pipeline";
 
@@ -37,6 +38,7 @@ typedef struct {
     collapse_handle_t  *collapse;
     quiet_detector_t    quiet_det;
     fall_detector_t     fall_det;
+    breathing_t        *breathing;          /* M4.3 — NULL if init failed */
 
     /* Per-frame scratch (PSRAM) */
     float              *h_freq_complex;     /* [2*N_sc]   = 424 B for HT20 */
@@ -117,6 +119,14 @@ esp_err_t pipeline_init(const pipeline_config_t *cfg)
     fall_detector_config_t fd_cfg = FALL_DETECTOR_CONFIG_DEFAULT();
     fall_detector_init(&g_pipe.fall_det, &fd_cfg);
 
+    /* ---- Breathing (M4.3) — soft-fail: optional, must not block pipeline ---- */
+    breathing_config_t br_cfg = BREATHING_CONFIG_DEFAULT();
+    br_cfg.n_subcarriers = N_sc;
+    if (breathing_init(&g_pipe.breathing, &br_cfg) != ESP_OK) {
+        ESP_LOGW(TAG, "breathing_init failed — breathing telemetry disabled");
+        g_pipe.breathing = NULL;
+    }
+
     /* ---- Per-frame scratch ---- */
     g_pipe.h_freq_complex  = psram_calloc(2 * N_sc, sizeof(float));
     g_pipe.h_clean_complex = psram_calloc(2 * N_sc, sizeof(float));
@@ -168,6 +178,7 @@ void pipeline_deinit(void)
 {
     if (g_pipe.shutter) shutter_deinit(g_pipe.shutter);
     if (g_pipe.collapse) collapse_deinit(g_pipe.collapse);
+    if (g_pipe.breathing) { breathing_deinit(g_pipe.breathing); g_pipe.breathing = NULL; }
     g_pipe.shutter = NULL;
     g_pipe.collapse = NULL;
     heap_caps_free(g_pipe.h_freq_complex);
@@ -339,6 +350,15 @@ static void emit_window(uint64_t now_us)
     t.noise_floor_avg   = noise_avg;
     t.csi_drop_count    = g_pipe.window_drop_count;
 
+    /* M4.3: breathing snapshot (estimator updates on its own 5 s cadence) */
+    if (g_pipe.breathing) {
+        breathing_result_t br;
+        breathing_get(g_pipe.breathing, &br);
+        t.breathing_bpm        = br.bpm;
+        t.breathing_confidence = br.confidence;
+        t.breathing_state      = (uint32_t)br.state;
+    }
+
     /* M3.6.4: push derived per-window snapshot into the Tier B buffer.
      * No-op if event_buffer isn't inited. */
     {
@@ -413,6 +433,11 @@ void pipeline_on_csi_frame(
     }
 
     ring_push(ts_us, g_pipe.amp_per_sc);
+
+    /* M4.3: feed amplitude row to breathing estimator (decimates internally to
+     * 10 Hz; heavy PSD runs on the 5 s cadence, ~0.3% CPU per frame). */
+    if (g_pipe.breathing)
+        breathing_on_frame(g_pipe.breathing, g_pipe.amp_per_sc, NULL, ts_us);
 
     /* M3.6.4: also push raw CSI into the Tier B rolling buffer.
      * No-op if event_buffer isn't inited. ~3 µs per frame. */

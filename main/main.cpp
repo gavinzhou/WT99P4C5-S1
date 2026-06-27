@@ -137,7 +137,7 @@ extern "C" void log_telemetry_cb(const pipeline_telemetry_t *t, void *ctx)
     ESP_LOGI(TAG,
              "[telemetry] ts=%llu  C=%.4f state=%d quiet=%d  "
              "norm_cv=%.3f shape=%.3f  G=%.1f  fps=%.0f n=%d  "
-             "rssi=%d  fall=%d conf=%.2f%s%s  mqtt=%s",
+             "rssi=%d  fall=%d conf=%.2f%s%s  br=%.1fbpm/c%.0f/s%u  mqtt=%s",
              (unsigned long long)t->timestamp_us,
              (double)t->collapse_index, (int)t->fsm_state, (int)t->quiet_period,
              (double)t->norm_cv, (double)t->shape_corr, (double)t->dynamic_gain_G,
@@ -147,6 +147,8 @@ extern "C" void log_telemetry_cb(const pipeline_telemetry_t *t, void *ctx)
              t->fall_event_rising_edge ? "  ★EVENT" : "",
              (t->fall_best_pattern_idx >= 0 && t->fall_event_rising_edge)
                  ? t->fall_best_pattern_name : "",
+             (double)t->breathing_bpm, (double)t->breathing_confidence,
+             (unsigned)t->breathing_state,
              mqtt_publisher_is_connected() ? "ON" : "OFF");
 
     /* M3.5.2: publish to MQTT (drops silently if broker disconnected). */

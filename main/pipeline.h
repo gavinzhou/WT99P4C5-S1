@@ -111,6 +111,12 @@ typedef struct {
     int      rssi_avg;
     int      noise_floor_avg;
     uint32_t csi_drop_count;                /* cumulative since boot */
+
+    /* Breathing (M4.3) — amplitude-only Welch estimate. bpm valid only when
+     * breathing_state == 2 (TRACKING). */
+    float    breathing_bpm;
+    float    breathing_confidence;
+    uint32_t breathing_state;               /* 0=cold 1=warmup 2=tracking 3=lost */
 } pipeline_telemetry_t;
 
 /** Telemetry callback. Invoked on the frame-delivery thread; do NOT block. */
