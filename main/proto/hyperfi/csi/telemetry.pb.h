@@ -39,6 +39,11 @@ typedef struct _hyperfi_csi_TelemetryReport {
     /* Device health */
     uint32_t heap_free_bytes;
     uint32_t uptime_ms;
+    /* Breathing rate (M4.3, P5.5 — amplitude-only Welch estimate). Disclosure
+ covered by MFR NDA. breathing_bpm valid only when breathing_state == 2. */
+    float breathing_bpm;
+    float breathing_confidence;
+    uint32_t breathing_state; /* 0=cold 1=warmup 2=tracking 3=lost */
 } hyperfi_csi_TelemetryReport;
 
 typedef struct _hyperfi_csi_AlertReport {
@@ -128,7 +133,7 @@ extern "C" {
 #endif
 
 /* Initializer values for message structs */
-#define hyperfi_csi_TelemetryReport_init_default {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0}
+#define hyperfi_csi_TelemetryReport_init_default {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define hyperfi_csi_AlertReport_init_default     {0, "", 0, 0, "", 0, false, hyperfi_csi_TelemetryReport_init_default}
 #define hyperfi_csi_EventCSIFrame_init_default   {0, 0, 0, 0, {0, {0}}}
 #define hyperfi_csi_EventWindowSnapshot_init_default {0, 0, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0}
@@ -136,7 +141,7 @@ extern "C" {
 #define hyperfi_csi_UploadRequest_init_default   {"", 0, 0, 0}
 #define hyperfi_csi_UploadResponse_init_default  {"", 0, "", 0}
 #define hyperfi_csi_UploadDone_init_default      {"", 0, 0, 0, 0, 0}
-#define hyperfi_csi_TelemetryReport_init_zero    {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0}
+#define hyperfi_csi_TelemetryReport_init_zero    {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define hyperfi_csi_AlertReport_init_zero        {0, "", 0, 0, "", 0, false, hyperfi_csi_TelemetryReport_init_zero}
 #define hyperfi_csi_EventCSIFrame_init_zero      {0, 0, 0, 0, {0, {0}}}
 #define hyperfi_csi_EventWindowSnapshot_init_zero {0, 0, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0}
@@ -165,6 +170,9 @@ extern "C" {
 #define hyperfi_csi_TelemetryReport_n_frames_in_window_tag 17
 #define hyperfi_csi_TelemetryReport_heap_free_bytes_tag 18
 #define hyperfi_csi_TelemetryReport_uptime_ms_tag 19
+#define hyperfi_csi_TelemetryReport_breathing_bpm_tag 20
+#define hyperfi_csi_TelemetryReport_breathing_confidence_tag 21
+#define hyperfi_csi_TelemetryReport_breathing_state_tag 22
 #define hyperfi_csi_AlertReport_timestamp_us_tag 1
 #define hyperfi_csi_AlertReport_event_type_tag   2
 #define hyperfi_csi_AlertReport_collapse_index_peak_tag 3
@@ -234,7 +242,10 @@ X(a, STATIC,   SINGULAR, FLOAT,    csi_fps,          15) \
 X(a, STATIC,   SINGULAR, UINT32,   csi_drop_count,   16) \
 X(a, STATIC,   SINGULAR, UINT32,   n_frames_in_window,  17) \
 X(a, STATIC,   SINGULAR, UINT32,   heap_free_bytes,  18) \
-X(a, STATIC,   SINGULAR, UINT32,   uptime_ms,        19)
+X(a, STATIC,   SINGULAR, UINT32,   uptime_ms,        19) \
+X(a, STATIC,   SINGULAR, FLOAT,    breathing_bpm,    20) \
+X(a, STATIC,   SINGULAR, FLOAT,    breathing_confidence,  21) \
+X(a, STATIC,   SINGULAR, UINT32,   breathing_state,  22)
 #define hyperfi_csi_TelemetryReport_CALLBACK NULL
 #define hyperfi_csi_TelemetryReport_DEFAULT NULL
 
@@ -339,10 +350,10 @@ extern const pb_msgdesc_t hyperfi_csi_UploadDone_msg;
 /* Maximum encoded size of messages (where known) */
 /* hyperfi_csi_EventRawContext_size depends on runtime parameters */
 #define HYPERFI_CSI_PROTO_HYPERFI_CSI_TELEMETRY_PB_H_MAX_SIZE hyperfi_csi_UploadResponse_size
-#define hyperfi_csi_AlertReport_size             275
+#define hyperfi_csi_AlertReport_size             294
 #define hyperfi_csi_EventCSIFrame_size           170
 #define hyperfi_csi_EventWindowSnapshot_size     104
-#define hyperfi_csi_TelemetryReport_size         174
+#define hyperfi_csi_TelemetryReport_size         193
 #define hyperfi_csi_UploadDone_size              69
 #define hyperfi_csi_UploadRequest_size           61
 #define hyperfi_csi_UploadResponse_size          564

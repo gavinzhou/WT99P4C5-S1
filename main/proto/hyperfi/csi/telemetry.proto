@@ -53,6 +53,12 @@ message TelemetryReport {
   // Device health
   uint32 heap_free_bytes = 18;
   uint32 uptime_ms       = 19;
+
+  // Breathing rate (M4.3, P5.5 — amplitude-only Welch estimate). Disclosure
+  // covered by MFR NDA. breathing_bpm valid only when breathing_state == 2.
+  float  breathing_bpm        = 20;
+  float  breathing_confidence = 21;
+  uint32 breathing_state      = 22;   // 0=cold 1=warmup 2=tracking 3=lost
 }
 
 message AlertReport {
