@@ -44,6 +44,7 @@
 #include "load_test.h"       /* ADR-024 eval — C5 WiFi uplink airtime stress */
 #include "m36_test.h"        /* ADR-023 M3.6.0 event_buffer regression test */
 #include "m_breathing_test.h" /* M4.3 breathing Welch-estimator regression test */
+#include "hf_config.h"        /* M4/PoC §3.1 — NVS commissioning config */
 #include "event_uploader.h"  /* ADR-023 M3.6.2 raw context cloud upload */
 #include "event_orchestrator.h"  /* ADR-023 M3.6.4 fall→buffer→encode→upload glue */
 #include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
@@ -405,6 +406,9 @@ extern "C" void app_main(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+
+    /* ---- M4/PoC §3.1: load commissioning config from NVS (defaults if empty) ---- */
+    hf_config_load();
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "  V5+V6: SDIO Throughput Test");

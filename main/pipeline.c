@@ -21,6 +21,7 @@
 #include "fall_detector.h"
 #include "event_buffer.h"
 #include "breathing.h"
+#include "hf_config.h"
 
 static const char *TAG = "pipeline";
 
@@ -99,9 +100,14 @@ esp_err_t pipeline_init(const pipeline_config_t *cfg)
     }
     if (g_pipe.cfg.ring_capacity < 100) g_pipe.cfg.ring_capacity = 100;
 
+    /* ---- Runtime commissioning config (NVS, M4/PoC §3.1) ---- */
+    const hf_config_t *hc = hf_config_get();
+
     /* ---- Shutter ---- */
     shutter_config_t sh_cfg = SHUTTER_CONFIG_DEFAULT();
     sh_cfg.n_subcarriers = N_sc;
+    sh_cfg.room_size_m   = hc->room_size_m;
+    sh_cfg.margin_m      = hc->margin_m;
     if (shutter_init(&g_pipe.shutter, &sh_cfg) != ESP_OK || !g_pipe.shutter) {
         ESP_LOGE(TAG, "shutter_init failed");
         goto err;
@@ -109,6 +115,8 @@ esp_err_t pipeline_init(const pipeline_config_t *cfg)
 
     /* ---- Collapse ---- */
     collapse_config_t col_cfg = COLLAPSE_CONFIG_DEFAULT();
+    col_cfg.collapse_threshold = hc->collapse_threshold;
+    col_cfg.silence_threshold  = hc->silence_threshold;
     if (collapse_init(&g_pipe.collapse, &col_cfg) != ESP_OK || !g_pipe.collapse) {
         ESP_LOGE(TAG, "collapse_init failed");
         goto err;
@@ -121,7 +129,8 @@ esp_err_t pipeline_init(const pipeline_config_t *cfg)
 
     /* ---- Breathing (M4.3) — soft-fail: optional, must not block pipeline ---- */
     breathing_config_t br_cfg = BREATHING_CONFIG_DEFAULT();
-    br_cfg.n_subcarriers = N_sc;
+    br_cfg.n_subcarriers  = N_sc;
+    br_cfg.min_confidence = hc->breathing_min_conf;
     if (breathing_init(&g_pipe.breathing, &br_cfg) != ESP_OK) {
         ESP_LOGW(TAG, "breathing_init failed — breathing telemetry disabled");
         g_pipe.breathing = NULL;
