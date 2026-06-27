@@ -32,3 +32,6 @@ main/m33_fixtures.h
 
 # ADR-023 M3.4: generated test fixtures (run hyperfi/tests/gen_m34_fixtures.py)
 main/m34_fixtures.h
+
+# M4.3: generated breathing fixtures (run hyperfi/tests/gen_breathing_fixtures.py)
+main/m_breathing_fixtures.h

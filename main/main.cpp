@@ -43,6 +43,7 @@
 #include "mqtt_publisher.h"  /* ADR-023 M3.5.2 ETH static IP + esp-mqtt publish */
 #include "load_test.h"       /* ADR-024 eval — C5 WiFi uplink airtime stress */
 #include "m36_test.h"        /* ADR-023 M3.6.0 event_buffer regression test */
+#include "m_breathing_test.h" /* M4.3 breathing Welch-estimator regression test */
 #include "event_uploader.h"  /* ADR-023 M3.6.2 raw context cloud upload */
 #include "event_orchestrator.h"  /* ADR-023 M3.6.4 fall→buffer→encode→upload glue */
 #include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
@@ -426,6 +427,9 @@ extern "C" void app_main(void)
 
     /* ---- ADR-023 M3.6.0: event_buffer rolling buffer self-test ---- */
     m36_run_self_test();
+
+    /* ---- M4.3: Breathing rate Welch-estimator self-test ---- */
+    breathing_run_self_test();
 
     /* ---- ADR-023 M3.5.0: bring up live pipeline (CSI → algorithms → telemetry) ---- */
     if (pipeline_init(NULL) == ESP_OK) {
