@@ -45,6 +45,7 @@
 #include "m36_test.h"        /* ADR-023 M3.6.0 event_buffer regression test */
 #include "m_breathing_test.h" /* M4.3 breathing Welch-estimator regression test */
 #include "hf_config.h"        /* M4/PoC §3.1 — NVS commissioning config */
+#include "hf_console.h"       /* M4/PoC §3.1 — commissioning REPL */
 #include "event_uploader.h"  /* ADR-023 M3.6.2 raw context cloud upload */
 #include "event_orchestrator.h"  /* ADR-023 M3.6.4 fall→buffer→encode→upload glue */
 #include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
@@ -444,6 +445,9 @@ extern "C" void app_main(void)
     } else {
         ESP_LOGE(TAG, "[Pipeline] init failed — pipeline disabled");
     }
+
+    /* ---- M4/PoC §3.1: on-site commissioning console (hf show/set/save) ---- */
+    hf_console_init();
 
     /* ---- Step 1: Flash C5 via UART (conditional) ---- */
 #if C5_DO_FLASH_ON_BOOT
