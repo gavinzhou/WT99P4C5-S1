@@ -48,6 +48,7 @@
 #include "hf_console.h"       /* M4/PoC §3.1 — commissioning REPL */
 #include "event_uploader.h"  /* ADR-023 M3.6.2 raw context cloud upload */
 #include "event_orchestrator.h"  /* ADR-023 M3.6.4 fall→buffer→encode→upload glue */
+#include "ota_health.h"      /* M4-OTA — post-OTA rollback health gate */
 #include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
 
 /* Set 1 to spawn the C5 WiFi uplink load test after Wi-Fi STA connects.
@@ -90,6 +91,22 @@ typedef struct __attribute__((packed)) {
 static uint32_t s_csi_frames_received = 0;
 static uint32_t s_csi_bytes_received  = 0;
 static int64_t  s_csi_first_us        = 0;
+
+/* M4-OTA: post-OTA health gate probes (see ota_health.h).
+ * fully_ok  = boot self-tests passed + MQTT uplink up + CSI flowing.
+ * uplink_ok = MQTT up — enough to keep the image (fix can come via OTA). */
+static bool s_selftests_ok = false;
+
+static bool ota_probe_fully_ok(void *ctx)
+{
+    return s_selftests_ok && mqtt_publisher_is_connected()
+           && s_csi_frames_received >= 100;
+}
+
+static bool ota_probe_uplink_ok(void *ctx)
+{
+    return mqtt_publisher_is_connected();
+}
 
 /* Wi-Fi event group */
 static EventGroupHandle_t s_wifi_event_group = NULL;
@@ -417,26 +434,39 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "  Target: %s via %s (ch36 5G)", IPERF_SERVER_IP, TEST_SSID);
     ESP_LOGI(TAG, "========================================");
 
-    /* ---- ADR-023 M3.1: Spatial Shutter self-test (no-op if fixtures absent) ---- */
-    shutter_run_self_test();
+    /* ---- Boot self-tests (results feed the M4-OTA health gate below) ---- */
+    bool st_ok = true;
+    /* ADR-023 M3.1: Spatial Shutter (no-op if fixtures absent) */
+    st_ok &= (shutter_run_self_test() == ESP_OK);
+    /* ADR-023 M3.2: Poincaré + Collapse */
+    st_ok &= (m32_run_self_test() == ESP_OK);
+    /* ADR-023 M3.3: Metrics + Quiet Detector */
+    st_ok &= (m33_run_self_test() == ESP_OK);
+    /* ADR-023 M3.4: Fall Detector (Stage I post-filter) */
+    st_ok &= (m34_run_self_test() == ESP_OK);
+    /* ADR-023 M3.5.1: protobuf encode/decode roundtrip */
+    st_ok &= (m35_run_proto_self_test() == ESP_OK);
+    /* ADR-023 M3.6.0: event_buffer rolling buffer */
+    st_ok &= (m36_run_self_test() == ESP_OK);
+    /* M4.3: Breathing rate Welch-estimator */
+    st_ok &= (breathing_run_self_test() == ESP_OK);
+    s_selftests_ok = st_ok;
 
-    /* ---- ADR-023 M3.2: Poincaré + Collapse self-test ---- */
-    m32_run_self_test();
-
-    /* ---- ADR-023 M3.3: Metrics + Quiet Detector self-test ---- */
-    m33_run_self_test();
-
-    /* ---- ADR-023 M3.4: Fall Detector (Stage I post-filter) self-test ---- */
-    m34_run_self_test();
-
-    /* ---- ADR-023 M3.5.1: protobuf encode/decode roundtrip self-test ---- */
-    m35_run_proto_self_test();
-
-    /* ---- ADR-023 M3.6.0: event_buffer rolling buffer self-test ---- */
-    m36_run_self_test();
-
-    /* ---- M4.3: Breathing rate Welch-estimator self-test ---- */
-    breathing_run_self_test();
+    /* ---- M4-OTA: arm the post-OTA rollback health gate.
+     * No-op on normal (USB-flashed / already-verified) boots. On the first
+     * boot after an esp_https_ota it must see fully_ok within 300 s, else
+     * uplink decides between keep (WARN) and rollback reboot. Armed here —
+     * before C5 flash / SDIO — so a hang later in bring-up still ends in
+     * a watchdog/reset and the bootloader reverts to the previous slot. */
+    {
+        ota_health_config_t hcfg = {
+            .fully_ok  = ota_probe_fully_ok,
+            .uplink_ok = ota_probe_uplink_ok,
+            .ctx       = NULL,
+            .timeout_s = 300,
+        };
+        ota_health_start(&hcfg);
+    }
 
     /* ---- ADR-023 M3.5.0: bring up live pipeline (CSI → algorithms → telemetry) ---- */
     if (pipeline_init(NULL) == ESP_OK) {
