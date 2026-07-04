@@ -111,15 +111,16 @@ static esp_err_t configure_eth_static_ip(const char *ip_str,
 
     /* M4-OTA: static IP disables DHCP, so no DNS arrives automatically —
      * without this the IoT Core / S3 hostnames never resolve. Gateway
-     * (facility router / Mac internet sharing) first, public DNS backup. */
+     * (facility router / Mac internet sharing) first, public DNS backup
+     * (1.1.1.1 — 8.8.8.8 is unreachable from mainland China test sites). */
     esp_netif_dns_info_t dns = {0};
     dns.ip.type = ESP_IPADDR_TYPE_V4;
     dns.ip.u_addr.ip4 = info.gw;
     (void)esp_netif_set_dns_info(eth, ESP_NETIF_DNS_MAIN, &dns);
-    ip4addr_aton("8.8.8.8", (ip4_addr_t *)&dns.ip.u_addr.ip4);
+    ip4addr_aton("1.1.1.1", (ip4_addr_t *)&dns.ip.u_addr.ip4);
     (void)esp_netif_set_dns_info(eth, ESP_NETIF_DNS_BACKUP, &dns);
 
-    ESP_LOGI(TAG, "ETH static IP %s/%s gw=%s set (DNS: gw + 8.8.8.8)",
+    ESP_LOGI(TAG, "ETH static IP %s/%s gw=%s set (DNS: gw + 1.1.1.1)",
              ip_str, netmask_str, gateway_str);
     return ESP_OK;
 }
