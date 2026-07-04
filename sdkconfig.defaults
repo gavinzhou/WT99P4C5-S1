@@ -100,3 +100,15 @@ CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_NONE=y
 # esp_ota_mark_app_valid_cancel_rollback() or bootloader reverts on reboot.
 # (USB-flashed images are unaffected — state stays VALID/UNDEFINED.)
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# M4-OTA signed-app soft verification (TD-006): ECDSA-P256 signature is
+# checked by the RUNNING app during esp_https_ota (no Secure Boot eFuse —
+# reversible). Signing key lives OUTSIDE all repos (~/.hyperfi-keys/,
+# interim location 2026-07-04; production key policy TBD, see TD-006).
+# Builds on machines without the key: comment these out (dev bins are
+# then unsigned and NOT OTA-deployable).
+CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y
+CONFIG_SECURE_SIGNED_APPS_ECDSA_V2_SCHEME=y
+CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y
+CONFIG_SECURE_BOOT_SIGNING_KEY="/Users/gavin/.hyperfi-keys/poincare_ota_signing_key.pem"
