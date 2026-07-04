@@ -94,3 +94,9 @@ CONFIG_ESP_HOSTED_SDIO_TX_Q_SIZE=30
 # HyperFi sustained need ~3 Mbps + ~32 Mbps event-blob burst, fits packet mode.
 # Slave side: see ../hyperfi/firmware/esp-hosted-mcu-vendored/slave/sdkconfig.defaults.esp32c5
 CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_NONE=y
+
+# M4-OTA (2026-07-04): A/B partitions + bootloader rollback.
+# New app boots as PENDING_VERIFY after an OTA; ota_health gate must call
+# esp_ota_mark_app_valid_cancel_rollback() or bootloader reverts on reboot.
+# (USB-flashed images are unaffected — state stays VALID/UNDEFINED.)
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

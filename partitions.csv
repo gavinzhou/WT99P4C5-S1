@@ -1,6 +1,11 @@
 # Name,   Type, SubType, Offset,  Size, Flags
-# Note: if you have increased the bootloader size, make sure to update the offsets to avoid overlap
-nvs,      data, nvs,     ,         0x6000,
-phy_init, data, phy,     ,         0x1000,
-factory,  app,  factory, ,         9M,
+# M4-OTA: factory 9M -> A/B (otadata + ota_0/ota_1 5M each) for
+# esp_https_ota. 16MB flash: ota_1 ends 0xA20000, storage ends 0xE20000.
+# NOTE: partition table cannot be changed over OTA — this layout is final
+# once deployed (last USB flash).
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xF000,  0x1000,
+otadata,  data, ota,     0x10000, 0x2000,
+ota_0,    app,  ota_0,   0x20000, 5M,
+ota_1,    app,  ota_1,   ,        5M,
 storage,  data, spiffs,  ,        4M,
