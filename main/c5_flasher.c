@@ -229,3 +229,71 @@ esp_err_t c5_full_flash(void)
     ESP_LOGI(TAG, "=== C5 Full Flash DONE ===");
     return ESP_OK;
 }
+
+/* ========================================================================== */
+/* M4-OTA: version-gated reflash — skip the ~13.5 s UART flash when the       */
+/* embedded c5_fw.bin already matches what was last flashed successfully.     */
+/* Identity = sha256 of the embedded binary, persisted in NVS after a         */
+/* successful flash. A P4 OTA that carries a new C5 bin changes the hash and  */
+/* naturally triggers one reflash on the next boot.                           */
+/* ========================================================================== */
+
+#include "nvs.h"
+#include "mbedtls/sha256.h"
+
+#define C5FW_NVS_NAMESPACE "c5fw"
+#define C5FW_NVS_KEY_SHA   "sha"
+
+static esp_err_t c5_embedded_sha256(uint8_t out[32])
+{
+    const size_t bin_size = (size_t)(c5_fw_bin_end - c5_fw_bin_start);
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+    mbedtls_sha256_update(&ctx, c5_fw_bin_start, bin_size);
+    mbedtls_sha256_finish(&ctx, out);
+    mbedtls_sha256_free(&ctx);
+    return ESP_OK;
+}
+
+bool c5_flash_is_needed(void)
+{
+    uint8_t want[32], have[32];
+    c5_embedded_sha256(want);
+
+    nvs_handle_t nh;
+    if (nvs_open(C5FW_NVS_NAMESPACE, NVS_READONLY, &nh) != ESP_OK) {
+        return true;   /* never flashed on this board */
+    }
+    size_t len = sizeof(have);
+    esp_err_t err = nvs_get_blob(nh, C5FW_NVS_KEY_SHA, have, &len);
+    nvs_close(nh);
+    if (err != ESP_OK || len != sizeof(have)) return true;
+
+    bool match = memcmp(want, have, sizeof(want)) == 0;
+    ESP_LOGI(TAG, "embedded C5 fw %s last flashed image — %s",
+             match ? "matches" : "differs from",
+             match ? "skipping reflash" : "reflash needed");
+    return !match;
+}
+
+void c5_flash_mark_done(void)
+{
+    uint8_t sha[32];
+    c5_embedded_sha256(sha);
+    nvs_handle_t nh;
+    if (nvs_open(C5FW_NVS_NAMESPACE, NVS_READWRITE, &nh) != ESP_OK) return;
+    if (nvs_set_blob(nh, C5FW_NVS_KEY_SHA, sha, sizeof(sha)) == ESP_OK) {
+        nvs_commit(nh);
+    }
+    nvs_close(nh);
+}
+
+void c5_flash_mark_stale(void)
+{
+    nvs_handle_t nh;
+    if (nvs_open(C5FW_NVS_NAMESPACE, NVS_READWRITE, &nh) != ESP_OK) return;
+    nvs_erase_key(nh, C5FW_NVS_KEY_SHA);
+    nvs_commit(nh);
+    nvs_close(nh);
+}

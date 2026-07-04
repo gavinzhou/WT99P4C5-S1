@@ -9,6 +9,7 @@
 
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_event.h"
@@ -18,6 +19,7 @@
 #include "esp_eth.h"
 #include "lwip/inet.h"
 #include "mqtt_client.h"
+#include "nvs.h"
 
 #include "bsp/wt99p4c5_s1_board.h"
 #include "proto_codec.h"
@@ -168,6 +170,53 @@ static void mqtt_event_cb(void *handler_args, esp_event_base_t base,
 /* -------------------------------------------------------------------------- */
 /* Init                                                                        */
 /* -------------------------------------------------------------------------- */
+
+/* ========================================================================== */
+/* M4-OTA: AWS IoT Core mTLS support.                                         */
+/* NVS namespace "mqtttls" may carry a broker URI override plus X.509         */
+/* material written at provisioning time (tools/aws/provision_device.sh):     */
+/*   uri  (str)  e.g. mqtts://xxx-ats.iot.ap-northeast-1.amazonaws.com:8883   */
+/*   ca   (blob) Amazon Root CA 1 (PEM)                                       */
+/*   cert (blob) device certificate (PEM)                                     */
+/*   key  (blob) device private key (PEM)                                     */
+/* Absent keys → compile-time default (local mosquitto, no TLS). Buffers are  */
+/* malloc'd once and kept for the client's lifetime (esp-mqtt keeps refs).    */
+/* ========================================================================== */
+static struct {
+    char *uri;
+    char *ca, *cert, *key;   /* null-terminated PEM */
+} s_tls;
+
+static char *nvs_load_str_or_blob(nvs_handle_t nh, const char *k, bool blob)
+{
+    size_t len = 0;
+    esp_err_t err = blob ? nvs_get_blob(nh, k, NULL, &len)
+                         : nvs_get_str(nh, k, NULL, &len);
+    if (err != ESP_OK || len == 0) return NULL;
+    char *buf = malloc(len + 1);
+    if (!buf) return NULL;
+    err = blob ? nvs_get_blob(nh, k, buf, &len)
+               : nvs_get_str(nh, k, buf, &len);
+    if (err != ESP_OK) { free(buf); return NULL; }
+    buf[len] = 0;   /* PEM must be null-terminated for esp-mqtt/mbedtls */
+    return buf;
+}
+
+static void mqtt_load_tls_from_nvs(void)
+{
+    nvs_handle_t nh;
+    if (nvs_open("mqtttls", NVS_READONLY, &nh) != ESP_OK) return;
+    s_tls.uri  = nvs_load_str_or_blob(nh, "uri",  false);
+    s_tls.ca   = nvs_load_str_or_blob(nh, "ca",   true);
+    s_tls.cert = nvs_load_str_or_blob(nh, "cert", true);
+    s_tls.key  = nvs_load_str_or_blob(nh, "key",  true);
+    nvs_close(nh);
+    if (s_tls.uri) ESP_LOGI(TAG, "broker override from NVS: %s", s_tls.uri);
+    if (s_tls.ca && s_tls.cert && s_tls.key) {
+        ESP_LOGI(TAG, "X.509 mTLS material loaded from NVS");
+    }
+}
+
 esp_err_t mqtt_publisher_init(const mqtt_publisher_config_t *cfg)
 {
     if (s.inited) return ESP_ERR_INVALID_STATE;
@@ -229,14 +278,22 @@ esp_err_t mqtt_publisher_init(const mqtt_publisher_config_t *cfg)
     ESP_LOGI(TAG, "topics: %s, %s", s.topic_telemetry, s.topic_event);
 
     /* ---- 4. esp-mqtt client ---- */
+    mqtt_load_tls_from_nvs();   /* M4-OTA: IoT Core URI + X.509 overrides */
     esp_mqtt_client_config_t mc = {
-        .broker.address.uri    = local.broker_uri,
+        .broker.address.uri    = s_tls.uri ? s_tls.uri : local.broker_uri,
         .credentials.client_id = s.device_id,
         .session.keepalive     = 60,
         .network.reconnect_timeout_ms = 5000,     /* TD-005: longer reconnect timeout */
         .network.disable_auto_reconnect = false,  /* TD-005: ensure auto-reconnect enabled */
         .network.timeout_ms = 10000,              /* TD-005: network operation timeout */
     };
+    if (s_tls.ca && s_tls.cert && s_tls.key) {
+        /* AWS IoT Core mutual TLS (ADR-004): server verified against the
+         * Amazon root CA, device authenticated by per-device X.509 cert. */
+        mc.broker.verification.certificate    = s_tls.ca;
+        mc.credentials.authentication.certificate = s_tls.cert;
+        mc.credentials.authentication.key     = s_tls.key;
+    }
     s.client = esp_mqtt_client_init(&mc);
     if (!s.client) {
         ESP_LOGE(TAG, "esp_mqtt_client_init failed");
@@ -258,7 +315,9 @@ esp_err_t mqtt_publisher_init(const mqtt_publisher_config_t *cfg)
         ESP_LOGE(TAG, "client_start: %d", err);
         return err;
     }
-    ESP_LOGI(TAG, "esp-mqtt client started (broker=%s)", local.broker_uri);
+    ESP_LOGI(TAG, "esp-mqtt client started (broker=%s%s)",
+             s_tls.uri ? s_tls.uri : local.broker_uri,
+             (s_tls.ca && s_tls.cert && s_tls.key) ? ", mTLS" : "");
     return ESP_OK;
 }
 

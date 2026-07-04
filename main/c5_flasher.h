@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -43,6 +44,16 @@ esp_err_t c5_full_flash(void);
  * SDIO handshake to fail with ESP_ERR_TIMEOUT 0x107).
  */
 void c5_release_normal_boot_public(void);
+
+/* M4-OTA version gate: true when the embedded c5_fw.bin sha256 differs from
+ * the one recorded after the last successful flash (or none recorded). */
+bool c5_flash_is_needed(void);
+
+/* Record the embedded bin's sha256 after a successful flash + SDIO bring-up. */
+void c5_flash_mark_done(void);
+
+/* Forget the recorded hash — next boot force-reflashes (SDIO recovery path). */
+void c5_flash_mark_stale(void);
 
 #ifdef __cplusplus
 }

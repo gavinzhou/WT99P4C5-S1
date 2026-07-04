@@ -49,6 +49,7 @@
 #include "event_uploader.h"  /* ADR-023 M3.6.2 raw context cloud upload */
 #include "event_orchestrator.h"  /* ADR-023 M3.6.4 fall→buffer→encode→upload glue */
 #include "ota_health.h"      /* M4-OTA — post-OTA rollback health gate */
+#include "iot_jobs.h"        /* M4-OTA — AWS IoT Jobs firmware-update channel */
 #include "bsp/wt99p4c5_s1_board.h"  /* bsp_eth_init() — direct USB-Ethernet to Mac */
 
 /* Set 1 to spawn the C5 WiFi uplink load test after Wi-Fi STA connects.
@@ -479,13 +480,25 @@ extern "C" void app_main(void)
     /* ---- M4/PoC §3.1: on-site commissioning console (hf show/set/save) ---- */
     hf_console_init();
 
-    /* ---- Step 1: Flash C5 via UART (conditional) ---- */
+    /* ---- Step 1: Flash C5 via UART (M4-OTA: version-gated) ----
+     * Reflash only when the embedded c5_fw.bin sha256 differs from the one
+     * recorded after the last successful flash (~13.5 s saved per boot; a
+     * P4 OTA carrying a new C5 bin changes the hash → one reflash).
+     * c5_flashed_this_boot feeds the SDIO recovery path below. */
+    bool c5_flashed_this_boot = false;
 #if C5_DO_FLASH_ON_BOOT
-    ESP_LOGI(TAG, "[Step 1] Flashing C5 via UART (~2 min)...");
-    if (c5_full_flash() == ESP_OK) {
-        ESP_LOGI(TAG, "[Step 1] ✓ C5 flash completed");
+    if (c5_flash_is_needed()) {
+        ESP_LOGI(TAG, "[Step 1] Flashing C5 via UART (~13.5 s)...");
+        if (c5_full_flash() == ESP_OK) {
+            ESP_LOGI(TAG, "[Step 1] ✓ C5 flash completed");
+            c5_flashed_this_boot = true;
+            /* hash recorded only after SDIO handshake succeeds (below) */
+        } else {
+            ESP_LOGE(TAG, "[Step 1] ✗ C5 flash FAILED — trying SDIO anyway");
+        }
     } else {
-        ESP_LOGE(TAG, "[Step 1] ✗ C5 flash FAILED — trying SDIO anyway");
+        ESP_LOGI(TAG, "[Step 1] C5 fw up to date — releasing to normal boot (skip ~13.5 s)");
+        c5_release_normal_boot_public();
     }
 #else
     ESP_LOGI(TAG, "[Step 1] Skipped flash — releasing C5 to normal boot (BOOT=HIGH + EN reset)...");
@@ -528,9 +541,23 @@ extern "C" void app_main(void)
     int hosted_err = esp_hosted_connect_to_slave();
     if (hosted_err != 0) {
         ESP_LOGE(TAG, "[Step 2] esp_hosted_connect_to_slave failed: %d", hosted_err);
+        if (!c5_flashed_this_boot) {
+            /* M4-OTA recovery: we skipped the C5 reflash this boot and SDIO
+             * failed — the recorded hash may be lying (C5 flash corrupt or
+             * residual state). Forget it and reboot: next boot reflashes. */
+            ESP_LOGE(TAG, "[Step 2] skip-flash path failed — forcing reflash on next boot");
+            c5_flash_mark_stale();
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
+        }
+        /* Freshly flashed and still no handshake: hardware-level problem
+         * (jumper, power) — hold here so the serial log is inspectable. */
         while (1) vTaskDelay(pdMS_TO_TICKS(1000));
     }
     ESP_LOGI(TAG, "[Step 2] ✓ SDIO handshake complete");
+    if (c5_flashed_this_boot) {
+        c5_flash_mark_done();   /* flash verified by live handshake — record hash */
+    }
 
     /* Register HyperFi CSI consumer (ADR-022 Custom RPC backport).
      * Must happen after SDIO handshake so the RPC channel is live;
@@ -605,6 +632,14 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "[Orchestrator] M3.6.4 ready — fall→cloud chain wired");
         } else {
             ESP_LOGW(TAG, "[Orchestrator] init failed — fall events will not upload");
+        }
+
+        /* M4-OTA: AWS IoT Jobs firmware-update channel (inert on local
+         * mosquitto — the $aws/... topics simply never fire). */
+        if (iot_jobs_init() == ESP_OK) {
+            ESP_LOGI(TAG, "[IoTJobs] ready — OTA jobs channel armed");
+        } else {
+            ESP_LOGW(TAG, "[IoTJobs] init failed — OTA via console only");
         }
     }
 

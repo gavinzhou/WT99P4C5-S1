@@ -21,14 +21,41 @@
 
 #include "esp_log.h"
 #include "esp_console.h"
+#include "nvs.h"
 #include "hf_config.h"
+#include "ota_updater.h"
 
 static const char *TAG = "hf_console";
 
 static void usage(void)
 {
     printf("usage: hf [show | set <key> <value> | save]\n"
-           "  keys: room margin collapse_thr silence_thr breathing_min\n");
+           "  keys: room margin collapse_thr silence_thr breathing_min\n"
+           "       hf ota <url> <sha256-hex>     download+apply firmware\n"
+           "       hf broker <mqtt-uri>|default  persist broker URI (reboot to apply)\n");
+}
+
+/* M4-OTA: persist the MQTT broker URI override (NVS "mqtttls"/"uri").
+ * mqtt_publisher_init() picks it up on the next boot; "default" erases. */
+static int broker_cmd(const char *uri)
+{
+    nvs_handle_t nh;
+    if (nvs_open("mqtttls", NVS_READWRITE, &nh) != ESP_OK) {
+        printf("nvs open failed\n");
+        return 1;
+    }
+    esp_err_t err;
+    if (!strcmp(uri, "default")) {
+        err = nvs_erase_key(nh, "uri");
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+        printf("broker override erased — compile-time default after reboot\n");
+    } else {
+        err = nvs_set_str(nh, "uri", uri);
+        printf("broker=%s persisted — reboot to apply\n", uri);
+    }
+    if (err == ESP_OK) err = nvs_commit(nh);
+    nvs_close(nh);
+    return err == ESP_OK ? 0 : 1;
 }
 
 static int cmd_hf(int argc, char **argv)
@@ -53,6 +80,20 @@ static int cmd_hf(int argc, char **argv)
         printf("set %s=%.4f (run 'hf save' to persist)\n", argv[2], v);
         return 0;
     }
+    if (!strcmp(argv[1], "ota")) {
+        if (argc < 4) { usage(); return 1; }
+        esp_err_t err = ota_updater_start(argv[2], argv[3], NULL, NULL);
+        if (err != ESP_OK) {
+            printf("ota start failed: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+        printf("ota started — watch [ota_updater] log lines\n");
+        return 0;
+    }
+    if (!strcmp(argv[1], "broker")) {
+        if (argc < 3) { usage(); return 1; }
+        return broker_cmd(argv[2]);
+    }
     usage();
     return 1;
 }
@@ -62,7 +103,8 @@ void hf_console_init(void)
     esp_console_repl_t *repl = NULL;
     esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
     repl_cfg.prompt = "hf>";
-    repl_cfg.max_cmdline_length = 128;
+    /* Presigned S3 URLs for `hf ota` run ~1 kB of query string. */
+    repl_cfg.max_cmdline_length = 1536;
 
     esp_console_dev_uart_config_t uart_cfg = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     esp_err_t err = esp_console_new_repl_uart(&uart_cfg, &repl_cfg, &repl);
